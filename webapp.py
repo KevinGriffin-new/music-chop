@@ -139,7 +139,58 @@ def api_gallery():
         # file:// can't be opened from an http page; route through /api/clip
         if d.get("clip", "").startswith("file://"):
             d["clip"] = "/api/clip?path=" + quote(d["clip"][len("file://"):])
-    return HTMLResponse(clip_gallery.render_from_data(data))
+    html = clip_gallery.render_from_data(data)
+    # append a selection layer: click cards to select, then make a project from
+    # them (kept here so the shared clip_gallery template stays browse-only)
+    return HTMLResponse(html.replace("</body>", _GALLERY_SELECT_LAYER + "</body>"))
+
+
+# Injected only into the web gallery (not the standalone CLI gallery). Clicking a
+# card toggles selection; "Create project" POSTs the selected clip paths.
+_GALLERY_SELECT_LAYER = r"""
+<style>.card.sel{outline:3px solid #5b9dff;outline-offset:-3px}
+#seltoolbar{position:sticky;bottom:0;background:#1c1f24;color:#e8e8e8;
+  padding:8px 12px;border-top:1px solid #2c2f36;display:flex;gap:8px;
+  align-items:center;flex-wrap:wrap;font:13px system-ui}
+#seltoolbar input{background:#0f1113;color:#e8e8e8;border:1px solid #333;
+  border-radius:6px;padding:5px 8px}</style>
+<div id=seltoolbar>
+  <b id=selcount>0 selected</b>
+  <input id=pname placeholder="project name">
+  <input id=ptrack placeholder="track e.g. 02 Erased.mp3">
+  <button id=pcreate>Create project from selection</button>
+  <span id=selmsg style="color:#8a93a0"></span>
+</div>
+<script>
+const _sel = new Set();
+function _refresh(){ document.getElementById('selcount').textContent = _sel.size + ' selected'; }
+document.querySelectorAll('.card').forEach(card => {
+  const a = card.querySelector('a'); if (!a) return;
+  const clip = new URL(a.href, location.href).searchParams.get('path');
+  if (!clip) return;                       // synthetic/unsupported clip
+  a.addEventListener('click', e => {
+    e.preventDefault();                    // click selects instead of navigating
+    if (_sel.has(clip)){ _sel.delete(clip); card.classList.remove('sel'); }
+    else { _sel.add(clip); card.classList.add('sel'); }
+    _refresh();
+  });
+});
+document.getElementById('pcreate').addEventListener('click', async () => {
+  const msg = document.getElementById('selmsg');
+  if (!_sel.size){ msg.textContent = 'select some clips first'; return; }
+  const name = document.getElementById('pname').value.trim();
+  if (!name){ msg.textContent = 'enter a project name'; return; }
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('track', document.getElementById('ptrack').value.trim());
+  _sel.forEach(c => fd.append('clips', c));
+  msg.textContent = 'creating…';
+  const r = await fetch('/api/projects', {method:'POST', body:fd});
+  msg.textContent = r.ok ? `created '${(await r.json()).name}' (${_sel.size} clips) — switch to the main tab`
+                         : 'failed: ' + await r.text();
+});
+</script>
+"""
 
 
 @app.get("/api/clip")
@@ -222,16 +273,22 @@ def api_sources():
 
 @app.post("/api/projects")
 def api_create_project(name: str = Form(...), track: str = Form(...),
-                       sources: List[str] = Form(default=[])):
-    """Create a project. No sources selected => whole library; else those tapes."""
+                       sources: List[str] = Form(default=[]),
+                       clips: List[str] = Form(default=[])):
+    """Create a project. Explicit `clips` (from the gallery) win; else `sources`
+    (tapes); else the whole library."""
     if not name.strip():
         raise HTTPException(400, "project name required")
-    clips = "all"
-    if sources:
+    if clips:
+        picked = clips
+    elif sources:
         srcmap = engine.manifest_sources(MANIFEST)
         picked = [c for s in sources for c in srcmap.get(s, [])]
-        clips = picked or "all"
-    p = engine.new_project(MEDIA, name.strip(), track.strip(), clips=clips)
+    else:
+        picked = "all"
+    if isinstance(picked, list) and not picked:
+        picked = "all"
+    p = engine.new_project(MEDIA, name.strip(), track.strip(), clips=picked)
     return {"name": p.name, "track": p.track,
             "clips": (len(p.clips) if isinstance(p.clips, list) else "all")}
 

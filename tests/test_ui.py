@@ -277,6 +277,22 @@ def test_web_index_has_project_controls(client):
     assert "id=project" in html and "id=psources" in html and "createProject" in html
 
 
+def test_web_create_project_from_explicit_clips(proj_client):
+    client, _ = proj_client
+    clips = ["/v/clips/a.mp4", "/v/clips/b.mp4", "/v/clips/c.mp4"]
+    r = client.post("/api/projects",
+                    data={"name": "From Gallery", "track": "Song.mp3", "clips": clips})
+    assert r.status_code == 200 and r.json()["clips"] == 3
+
+
+def test_web_gallery_has_selection_layer(proj_client):
+    client, _ = proj_client
+    html = client.get("/api/gallery").text
+    assert "id=seltoolbar" in html and "Create project from selection" in html
+    assert "/api/projects" in html        # the create POST target
+    assert "card.classList" in html       # click-to-select wiring
+
+
 def test_tk_gallery_selection_and_apply(app, smoke_manifest):
     pytest.importorskip("PIL")
     import tkapp

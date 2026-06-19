@@ -5,12 +5,9 @@ the **bug tracker** (https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv), which
 is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
 ## Next
-- **Gallery-based clip selection in the web tier.** The web project create form
-  scopes by source/tape; the Tk gallery already does multi-select — bring that
-  to the web `/api/gallery`.
+- **Cancellation** of a running stage (both tiers) — stop a long render/analyze.
 
 ## Later
-- **Cancellation** of a running stage (both tiers) — stop a long render/analyze.
 - **Incremental catalog** — "Add footage" should feature-extract only the *new*
   clips and append to the manifest, instead of re-cataloging the whole library.
 - **Gallery "Use selection" semantics** — currently replaces a project's clips
@@ -23,7 +20,8 @@ is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
 ## Done (for context)
 Hardened engine (6 stages, fail-loud, real progress, provenance); both UIs with
-uploads/pickers; catalog gallery (web + Tk, with gallery-based clip selection);
+uploads/pickers; catalog gallery + gallery-based clip selection (Tk + web);
+library cuts collected in a cuts/ folder;
 arrange options + energy-match summary; IRIX/4Dwm Tk theme + SGI font; projects
 (track + scoped clips + options) in the engine, Tk, and the web tier; MPL-2.0;
 on sr.ht.
