@@ -10,6 +10,10 @@ core (`engine.py`) wraps a set of proven pipeline scripts; two thin front ends
   Tkinter (classic, threads)   ─┘
 ```
 
+**Bugs / issues:** https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv — see
+[REPORTING.md](REPORTING.md) for what to include (for Tk bugs, the launch
+terminal's traceback is usually the whole answer).
+
 ## Layout
 
 ```
