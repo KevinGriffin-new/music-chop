@@ -5,8 +5,8 @@ the **bug tracker** (https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv), which
 is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
 ## Next
-- **Incremental catalog** — "Add footage" should feature-extract only the *new*
-  clips and append to the manifest, instead of re-cataloging the whole library.
+- **Gallery "Use selection" semantics** — currently replaces a project's clips
+  wholesale; consider an add/remove mode.
 
 ## Bigger features
 - **Export polish.** The export stage ships (OTIO + FCPXML, below). Follow-ups
@@ -14,8 +14,6 @@ is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
   format (OTIO's cmx3600 adapter), and a UI toggle for which formats to write.
 
 ## Later
-- **Gallery "Use selection" semantics** — currently replaces a project's clips
-  wholesale; consider an add/remove mode.
 - **Web E2E tests** with Playwright (the web tier is a real web app; server-side
   is already covered by FastAPI TestClient).
 - **Packaging** — bundle the Tk tier as a double-click app (PyInstaller/py2app;
@@ -38,5 +36,8 @@ trimmed at the recorded source in-points + one audio track of the music; both
 UIs have an Export button);
 **compare timing schemes by energy match** (`compare()` arranges every grid and
 ranks them by match%/cuts/clips, leaving each variant ready to render/export;
-both UIs have a "Compare grids" button that preselects the winner); MPL-2.0;
-on sr.ht.
+both UIs have a "Compare grids" button that preselects the winner);
+**incremental "Add footage"** (`catalog(append=True)` feature-extracts only the
+clips not already in the manifest and appends them — existing rows + histograms
+carried forward — so adding a tape doesn't re-process the whole library);
+MPL-2.0; on sr.ht.

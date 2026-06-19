@@ -310,6 +310,61 @@ def test_catalog_writes_manifest(clips_dir, tmp_path):
         assert len(list(csv.DictReader(fh))) == 2
 
 
+def test_catalog_append_passes_flag(tmp_path, monkeypatch):
+    """Pure: append=True adds --append to the wrapped command; default doesn't."""
+    stub = tmp_path / "echo_argv.py"
+    stub.write_text(
+        "import sys, os\n"
+        "out = sys.argv[sys.argv.index('-o') + 1]\n"
+        "os.makedirs(out, exist_ok=True)\n"
+        "open(os.path.join(out, 'argv.txt'), 'w').write(' '.join(sys.argv))\n"
+        "open(os.path.join(out, 'manifest.csv'), 'w').write('clip\\n')\n")
+    monkeypatch.setitem(engine.SCRIPT, "features", str(stub))
+    out = str(tmp_path / "cat")
+    list(engine.catalog(str(tmp_path), out, append=True))
+    assert "--append" in open(os.path.join(out, "argv.txt")).read()
+    list(engine.catalog(str(tmp_path), out, append=False))
+    assert "--append" not in open(os.path.join(out, "argv.txt")).read()
+
+
+@requires_cv2
+@requires_ffmpeg
+def test_catalog_append_only_adds_new_clips(tmp_path):
+    """Incremental: append catalogs only clips not already in the manifest,
+    carries the existing rows + histograms forward, and is a no-op when nothing
+    is new."""
+    from conftest import _make_clip
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    _make_clip(str(clips / "a.mp4"))
+    out = str(tmp_path / "cat")
+    manifest = os.path.join(out, "manifest.csv")
+    engine.run_stage(engine.catalog(str(clips), out, frames=4, width=120),
+                     lambda e: None)
+    rows1 = list(csv.DictReader(open(manifest)))
+    assert {os.path.basename(r["clip"]) for r in rows1} == {"a.mp4"}
+    a_motion = rows1[0]["motion_energy"]
+
+    # add a second clip, append-catalog: only the new clip is processed
+    _make_clip(str(clips / "b.mp4"))
+    engine.run_stage(engine.catalog(str(clips), out, frames=4, width=120, append=True),
+                     lambda e: None)
+    rows2 = list(csv.DictReader(open(manifest)))
+    assert {os.path.basename(r["clip"]) for r in rows2} == {"a.mp4", "b.mp4"}
+    # the pre-existing row is carried forward unchanged (not recomputed)
+    a_row = next(r for r in rows2 if os.path.basename(r["clip"]) == "a.mp4")
+    assert a_row["motion_energy"] == a_motion
+    # histograms grew to match (one vector per clip)
+    import numpy as np
+    hz = np.load(os.path.join(out, "histograms.npz"), allow_pickle=True)
+    assert len(hz["vecs"]) == 2
+
+    # re-running append with nothing new leaves the manifest unchanged
+    engine.run_stage(engine.catalog(str(clips), out, frames=4, width=120, append=True),
+                     lambda e: None)
+    assert len(list(csv.DictReader(open(manifest)))) == 2
+
+
 # ── integration: analyze (real librosa) ──────────────────────────────────────
 @requires_librosa
 @requires_ffmpeg

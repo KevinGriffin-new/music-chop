@@ -61,6 +61,12 @@ by energy match, so you can pick the scheme that best fits — each candidate's
 sidecars are left on disk, so the winner is ready to render or export. Both UIs
 have a "Compare grids" button; the winning grid is preselected afterward.
 
+**Add footage is incremental** — `detect` skips sources already split, and
+`catalog(append=True)` feature-extracts only the clips not already in the
+manifest and appends them (carrying the existing rows + histograms forward), so
+adding a tape doesn't re-process the whole library. A full rebuild is
+`catalog()` with `append=False`.
+
 Each stage is a generator yielding `ProgressEvent(stage, message, frac, done,
 result)` and raises `StageError` on failure — no printing, no globals. Stages
 verify their declared outputs exist before reporting `done`.

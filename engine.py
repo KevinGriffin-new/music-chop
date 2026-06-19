@@ -412,9 +412,15 @@ def catalog(
     frames: int = 12,
     width: int = 160,
     recursive: bool = False,
+    append: bool = False,
     cancel: CancelToken = None,
 ) -> Iterator[ProgressEvent]:
     """Extract features → out_dir/manifest.csv (+ histograms.npz, thumbs/).
+
+    With append=True the catalog is incremental: only clips not already in the
+    manifest are feature-extracted and appended (used by "Add footage" so it
+    doesn't re-process the whole library each time). Default re-catalogs the
+    whole pile, overwriting the manifest.
 
     TODO(claude-code): to drop the subprocess, call clip_features.analyze()
     per file directly and write the manifest here. Not required — this works.
@@ -425,6 +431,8 @@ def catalog(
            "--frames", str(frames), "--width", str(width)]
     if recursive:
         cmd.append("--recursive")
+    if append:
+        cmd.append("--append")
     tail: list[str] = []
     for line in _stream(cmd, cwd=MEDIA, cancel=cancel):
         tail = (tail + [line])[-25:]

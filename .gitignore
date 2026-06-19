@@ -29,6 +29,17 @@ clips/
 cut-*.mp4
 order-sync-*.csv
 render-*.sh
+# stray media/output trees if the app is run from inside the checkout
+# (anchored to the repo root so _smoke/ fixtures are unaffected)
+/catalog/
+/projects/
+/sources/
+/album-audio/
+/cuts/
+# timeline-export + catalog artifacts
+*.otio
+*.fcpxml
+histograms.npz
 
 # ...but keep the committed synthetic test fixtures under _smoke/
 !_smoke/**

@@ -171,7 +171,8 @@ def api_footage():
     job_id, cancel = _new_job()
     def chain():
         yield from engine.detect(SOURCES, CLIPS, cancel=cancel)
-        yield from engine.catalog(CLIPS, CATALOG, cancel=cancel)
+        # incremental: only catalog the newly-split clips, append to the manifest
+        yield from engine.catalog(CLIPS, CATALOG, append=True, cancel=cancel)
     return _sse(chain(), cancel=cancel, job_id=job_id)
 
 

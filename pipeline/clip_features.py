@@ -156,6 +156,10 @@ def main():
                     help="downscale width for analysis (default 160)")
     ap.add_argument("--recursive", action="store_true",
                     help="search clips_dir recursively")
+    ap.add_argument("--append", action="store_true",
+                    help="incremental: feature-extract only clips not already in "
+                         "the manifest and append them (instead of re-cataloging "
+                         "the whole pile and overwriting)")
     args = ap.parse_args()
 
     pattern = "**/*" if args.recursive else "*"
@@ -172,6 +176,27 @@ def main():
 
     fields = ["clip", "source", "capture_time", "duration_s", "motion_energy",
               "mean_luma", "hue_deg", "colorfulness", "sharpness", "thumb"]
+    manifest = os.path.join(args.out, "manifest.csv")
+    hist_path = os.path.join(args.out, "histograms.npz")
+
+    # incremental: carry the existing manifest + histograms forward and only
+    # process clips we haven't seen, so "Add footage" doesn't re-extract the
+    # whole library every time.
+    existing_rows, existing_keys, existing_vecs = [], [], []
+    if args.append and os.path.exists(manifest):
+        with open(manifest, newline="") as fh:
+            existing_rows = list(csv.DictReader(fh))
+        have = {os.path.abspath(r["clip"]) for r in existing_rows if r.get("clip")}
+        if os.path.exists(hist_path):
+            d = np.load(hist_path, allow_pickle=True)
+            existing_keys = list(d["keys"])
+            existing_vecs = list(d["vecs"])
+        paths = [p for p in paths if os.path.abspath(p) not in have]
+        if not paths:
+            print(f"Nothing new to catalog — {len(existing_rows)} clips already "
+                  f"in the manifest.")
+            return
+
     rows, hist_keys, hist_vecs = [], [], []
 
     for i, path in enumerate(paths, 1):
@@ -195,19 +220,23 @@ def main():
             **feats,
         })
 
-    manifest = os.path.join(args.out, "manifest.csv")
+    all_rows = existing_rows + rows                 # existing first (append mode)
     with open(manifest, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=fields)
+        w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
-        w.writerows(rows)
+        w.writerows(all_rows)
 
-    np.savez(os.path.join(args.out, "histograms.npz"),
-             keys=np.array(hist_keys), vecs=np.array(hist_vecs))
+    np.savez(hist_path,
+             keys=np.array(existing_keys + hist_keys),
+             vecs=np.array(existing_vecs + hist_vecs))
 
-    print(f"\nDone. {len(rows)} clips cataloged.")
+    if existing_rows:
+        print(f"\nDone. {len(rows)} new clip(s) cataloged ({len(all_rows)} total).")
+    else:
+        print(f"\nDone. {len(all_rows)} clips cataloged.")
     print(f"  manifest:   {manifest}")
     print(f"  thumbnails: {thumbs_dir}")
-    print(f"  histograms: {os.path.join(args.out, 'histograms.npz')}")
+    print(f"  histograms: {hist_path}")
 
 
 if __name__ == "__main__":

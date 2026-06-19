@@ -876,7 +876,8 @@ class App(tk.Tk):
 
         def chain(c):
             yield from engine.detect(sources, clips, cancel=c)
-            yield from engine.catalog(clips, cat, cancel=c)
+            # incremental: only catalog the newly-split clips, append to manifest
+            yield from engine.catalog(clips, cat, append=True, cancel=c)
         self._spawn(chain)
 
     def open_gallery(self) -> None:
