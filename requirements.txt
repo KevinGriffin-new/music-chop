@@ -13,6 +13,7 @@ librosa            # musical analysis (pulls in numba)
 opencv-python      # clip visual features
 scikit-learn       # clustering / similarity ordering
 matplotlib         # optional analysis plots (track_analyze --plot)
+pillow             # Tk gallery: decode catalog thumbs (JPEG) into PhotoImages
 scenedetect[opencv]
 coverage>=7.14     # numba imports coverage.types.Tracer at load; older
                    # coverage (<7.14, exposed it as TTracer) breaks the

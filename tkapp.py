@@ -20,9 +20,9 @@ two patterns the Tk side hinges on:
      trade vs. the web tier's inline <video>.
 
 File pickers are wired (Add ▸ Music track… / Video footage…): a track is
-analyzed in place; footage is scene-split then cataloged. Still to flesh out:
-the grid/reuse parameter controls, a clip gallery (a Canvas of the thumbs/
-jpgs), and cancellation.
+analyzed in place; footage is scene-split then cataloged. The clip gallery
+(Gallery… → a scrollable Canvas of the thumbs/ jpgs, click to play) is wired
+too. Still to flesh out: the grid/reuse parameter controls and cancellation.
 
 Run:  python3 tkapp.py        (Tkinter ships with CPython)
 """
@@ -32,16 +32,35 @@ import os
 import platform
 import queue
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import engine
 
+# reuse the gallery data builder (same as the web tier) regardless of cwd
+if engine.HERE not in sys.path:
+    sys.path.insert(0, engine.HERE)
+from pipeline import clip_gallery
+
 AUDIO_TYPES = [("Audio", "*.mp3 *.wav *.m4a *.flac *.aac *.ogg *.aif *.aiff"),
                ("All files", "*.*")]
 VIDEO_TYPES = [("Video", "*.mp4 *.mov *.mkv *.m4v *.avi *.dv"),
                ("All files", "*.*")]
+
+
+def gallery_thumb_path(manifest_path: str, thumb_rel: str) -> str:
+    """Filesystem path of a thumb (the manifest stores it relative to its dir)."""
+    if not thumb_rel:
+        return ""
+    return os.path.join(os.path.dirname(os.path.abspath(manifest_path)), thumb_rel)
+
+
+def gallery_clip_path(row: dict) -> str:
+    """Filesystem path of a clip from a gallery row (strips the file:// prefix)."""
+    c = row.get("clip", "")
+    return c[len("file://"):] if c.startswith("file://") else c
 
 # ── period-correct palette (Motif/CDE grey) ────────────────────────────────
 GREY = "#b0b0b0"      # the canonical workstation grey
@@ -59,6 +78,92 @@ def open_in_player(path: str) -> None:
         os.startfile(path)  # type: ignore[attr-defined]
     else:
         subprocess.Popen(["xdg-open", path])
+
+
+class GalleryWindow(tk.Toplevel):
+    """A scrollable thumbnail contact sheet of the cataloged clips.
+
+    The Tk parallel to the web /api/gallery: same data (clip_gallery), a Canvas
+    grid of the catalog/thumbs/*.jpg images, click a thumb to open the clip in
+    the OS player. Thumbnails decode in .after() chunks so the window stays
+    responsive instead of freezing while 300+ JPEGs load.
+    """
+    COLS = 4
+    THUMB = (150, 100)
+
+    def __init__(self, master, manifest_path: str) -> None:
+        super().__init__(master)
+        self.title("dv2mv — clip gallery")
+        self.configure(bg=GREY)
+        self.geometry("680x520")
+        self._manifest = manifest_path
+        self._images = []          # keep PhotoImage refs alive (else they GC away)
+
+        self.head = tk.Label(self, text="loading…", bg=DARK, fg="white", font=FONT,
+                             anchor="w", relief="sunken", bd=2)
+        self.head.pack(fill="x")
+
+        body = tk.Frame(self, bg=GREY)
+        body.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(body, bg=GREY, highlightthickness=0)
+        vsb = tk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = tk.Frame(self.canvas, bg=GREY)
+        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(
+            scrollregion=self.canvas.bbox("all")))
+        self._bind_wheel(self.canvas)
+
+        data = clip_gallery.build_gallery_data(manifest_path)
+        self._total = len(data)
+        self._queue = list(enumerate(data))
+        self.after(1, self._load_chunk)
+
+    def _bind_wheel(self, w) -> None:
+        # bind per-widget (not bind_all) so the gallery wheel doesn't hijack the
+        # main window's log scroll while it's open
+        w.bind("<MouseWheel>", self._wheel)
+        w.bind("<Button-4>", self._wheel)
+        w.bind("<Button-5>", self._wheel)
+
+    def _wheel(self, e) -> None:
+        num = getattr(e, "num", 0)
+        step = 1 if num == 5 else -1 if num == 4 else int(-(e.delta or 0) / 120) or 0
+        self.canvas.yview_scroll(step, "units")
+
+    def _load_chunk(self) -> None:
+        from PIL import Image, ImageTk
+        for _ in range(16):
+            if not self._queue:
+                self.head.config(text=f"{self._total} clips — click a thumb to play")
+                return
+            i, d = self._queue.pop(0)
+            self._add_card(i, d, Image, ImageTk)
+        self.head.config(text=f"loading… {self._total - len(self._queue)}/{self._total}")
+        self.after(1, self._load_chunk)
+
+    def _add_card(self, i, d, Image, ImageTk) -> None:
+        r, c = divmod(i, self.COLS)
+        cell = tk.Frame(self.inner, bg=GREY, relief="raised", bd=2)
+        cell.grid(row=r, column=c, padx=4, pady=4, sticky="n")
+        path = gallery_thumb_path(self._manifest, d.get("thumb", ""))
+        try:
+            im = Image.open(path)
+            im.thumbnail(self.THUMB)
+        except Exception:
+            im = Image.new("RGB", self.THUMB, "#222")   # missing-thumb placeholder
+        img = ImageTk.PhotoImage(im)
+        self._images.append(img)
+        clip = gallery_clip_path(d)
+        thumb = tk.Label(cell, image=img, bg="black", cursor="hand2")
+        thumb.pack()
+        thumb.bind("<Button-1>", lambda e, p=clip: open_in_player(p))
+        tk.Label(cell, text=d.get("name", "")[:22], bg=GREY,
+                 font=("Helvetica", 9)).pack()
+        for w in (cell, thumb):
+            self._bind_wheel(w)
 
 
 class App(tk.Tk):
@@ -89,6 +194,9 @@ class App(tk.Tk):
         tk.Button(src, text="Video footage…", font=FONT, bg=GREY, relief="raised",
                   bd=2, activebackground=LIGHT, padx=8,
                   command=self.add_footage).pack(side="left", padx=4, pady=4)
+        tk.Button(src, text="Gallery…", font=FONT, bg=GREY, relief="raised",
+                  bd=2, activebackground=LIGHT, padx=8,
+                  command=self.open_gallery).pack(side="right", padx=4, pady=4)
 
         btns = tk.Frame(self, bg=GREY)
         btns.pack(fill="x", padx=6)
@@ -210,6 +318,16 @@ class App(tk.Tk):
             yield from engine.detect(sources, clips)
             yield from engine.catalog(clips, cat)
         self._spawn(chain)
+
+    def open_gallery(self) -> None:
+        """Open the thumbnail contact sheet for the current catalog."""
+        manifest = os.path.join(engine.MEDIA, "catalog", "manifest.csv")
+        if not os.path.exists(manifest):
+            messagebox.showinfo(
+                "dv2mv — gallery",
+                "No catalog yet — add footage (Video footage…) to build it first.")
+            return
+        GalleryWindow(self, manifest)
 
     # ── main-thread UI pump ────────────────────────────────────────────────
     def _drain(self) -> None:

@@ -155,6 +155,30 @@ def test_tkapp_has_progress_and_prompt_machinery():
         assert hasattr(tkapp.App, attr), attr
 
 
+# ── Tk clip gallery ──────────────────────────────────────────────────────────
+def test_tk_gallery_path_helpers():
+    pytest.importorskip("tkinter")
+    import tkapp
+    mp = os.path.join("x", "catalog", "manifest.csv")
+    # thumb path resolves relative to the manifest's own directory
+    assert tkapp.gallery_thumb_path(mp, "thumbs/a.jpg") == \
+        os.path.abspath(os.path.join("x", "catalog", "thumbs", "a.jpg"))
+    assert tkapp.gallery_thumb_path(mp, "") == ""
+    # clip path strips the file:// the gallery data builder adds
+    assert tkapp.gallery_clip_path({"clip": "file:///v/clips/a.mp4"}) == "/v/clips/a.mp4"
+    assert tkapp.gallery_clip_path({"clip": "/v/clips/b.mp4"}) == "/v/clips/b.mp4"
+    assert tkapp.gallery_clip_path({}) == ""
+
+
+def test_tk_gallery_window_and_button_present():
+    pytest.importorskip("tkinter")
+    import tkapp
+    assert hasattr(tkapp, "GalleryWindow")
+    for attr in ("_load_chunk", "_add_card", "_wheel", "_bind_wheel"):
+        assert hasattr(tkapp.GalleryWindow, attr), attr
+    assert hasattr(tkapp.App, "open_gallery")
+
+
 # ── render resolves the suffixed arrange output (the uploaded-track chain) ────
 @pytest.fixture
 def render_client(tmp_path, monkeypatch):
