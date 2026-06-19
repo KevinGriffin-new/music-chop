@@ -213,6 +213,42 @@ def test_tkapp_has_export_flow():
     assert hasattr(tkapp.App, "_export_flow")
 
 
+# ── grid comparison (rank schemes by energy match) ───────────────────────────
+def test_compare_missing_analysis_streams_error(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "CATALOG_AUDIO", str(tmp_path / "catalog_audio"))
+    monkeypatch.setattr(webapp, "MANIFEST", str(tmp_path / "manifest.csv"))
+    body = client.get("/api/compare", params={"track": "Ghostsong.mp3"}).text
+    assert ('"error": true' in body or '"error":true' in body) and "Analyze" in body
+
+
+def test_compare_endpoint_streams_ranked_table(client, tmp_path, monkeypatch,
+                                               smoke_manifest):
+    """End-to-end through the web tier: every grid arranges and a ranked
+    comparison (with a best) comes back over SSE."""
+    cat = tmp_path / "catalog_audio"
+    cat.mkdir()
+    write_analysis(str(cat), "/tmp/Song.mp3", track="Song")
+    monkeypatch.setattr(webapp, "CATALOG_AUDIO", str(cat))
+    monkeypatch.setattr(webapp, "MANIFEST", smoke_manifest)
+    monkeypatch.setattr(webapp, "MEDIA", str(tmp_path))     # cut_dir lands under MEDIA
+    body = client.get("/api/compare",
+                      params={"track": "Song.mp3", "allow_reuse": "true"}).text
+    assert '"comparison"' in body and '"best"' in body
+    assert '"stage": "compare"' in body or '"stage":"compare"' in body
+
+
+def test_index_has_compare_control(client):
+    html = client.get("/").text
+    assert "go('compare')" in html and "showComparison" in html
+    assert "id=compare" in html
+
+
+def test_tkapp_has_compare_flow():
+    pytest.importorskip("tkinter")
+    import tkapp
+    assert hasattr(tkapp.App, "_compare_flow") and hasattr(tkapp.App, "_show_comparison")
+
+
 def test_tk_cancel_button_present_and_idle_safe(app):
     """Cancel is disabled while idle, and pressing it with nothing running is a
     safe no-op (must not raise or arm a phantom stop)."""

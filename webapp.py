@@ -295,6 +295,31 @@ def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
                 cancel=cancel, job_id=job_id)
 
 
+@app.get("/api/compare")
+def api_compare(track: str = "", beats_per_cut: int = 4, allow_reuse: bool = False,
+                drop_blurry: float = 0.0, clip_from: str = "middle",
+                project: str = "", grid: str = ""):
+    """Arrange the track across all grids and stream a ranked comparison. `grid`
+    is accepted but ignored (compare sweeps every grid)."""
+    job_id, cancel = _new_job()
+    if project:
+        p = engine.load_project(MEDIA, project)
+        if track:
+            p.track = track
+        (p.beats_per_cut, p.allow_reuse, p.drop_blurry, p.clip_from) = (
+            beats_per_cut, allow_reuse, drop_blurry, clip_from)
+        p.save()
+        return _sse(engine.compare_project(p, MEDIA, cancel=cancel),
+                    cancel=cancel, job_id=job_id)
+    analysis = os.path.join(CATALOG_AUDIO,
+                            f"{os.path.splitext(track)[0]}.analysis.json")
+    return _sse(engine.compare(analysis, MANIFEST, beats_per_cut=beats_per_cut,
+                               allow_reuse=allow_reuse, drop_blurry=drop_blurry,
+                               clip_from=clip_from, cut_dir=os.path.join(MEDIA, "cuts"),
+                               cancel=cancel),
+                cancel=cancel, job_id=job_id)
+
+
 @app.get("/api/render")
 def api_render(track: str = "", grid: str = "", project: str = ""):
     job_id, cancel = _new_job()
@@ -435,6 +460,7 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <datalist id=tracklist></datalist>
 <button onclick="go('analyze')">Analyze</button>
 <button onclick="go('arrange')">Arrange</button>
+<button onclick="go('compare')" title="arrange every grid and rank them by energy match">Compare grids</button>
 <button onclick="go('render')">Render</button>
 <button onclick="go('export')" title="emit an editable timeline (OTIO + FCPXML) for DaVinci Resolve">Export ⤓</button>
 <button id=cancelbtn onclick="cancelJob()" disabled>Cancel</button>
@@ -459,6 +485,8 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <progress id=bar value=0 max=1 style="width:100%;display:block;margin:1rem 0"></progress>
 <div id=summary style="display:none;margin:.5rem 0;padding:.5rem .7rem;
   background:#eef3ff;border:1px solid #cdd9f0;border-radius:6px;font-size:13px"></div>
+<div id=compare style="display:none;margin:.5rem 0;padding:.5rem .7rem;
+  background:#f3f7ee;border:1px solid #d6e3c5;border-radius:6px;font-size:13px"></div>
 <pre id=log style="background:#eee;padding:1rem;height:160px;overflow:auto"></pre>
 <video id=vid controls style="width:100%;display:none"></video>
 <div id=vidpath style="display:none;margin:.4rem 0;font:12px ui-monospace,monospace;
@@ -528,6 +556,9 @@ function stream(url, stage, track){
           + p.split('/').pop() + '</a>').join(' · ')
           + ' — import into DaVinci Resolve';
         e.style.display = 'block';
+      }
+      if (stage === 'compare' && ev.result && ev.result.comparison){
+        showComparison(ev.result);
       }
     }
   };
@@ -610,13 +641,41 @@ async function createProject(){
   $('pname').value = '';
 }
 
+function showComparison(res){
+  const ranked = res.ranked || res.comparison, best = res.best;
+  const cell = (v, r) => `<td style="padding:2px 10px;text-align:right">${v == null ? '—' : v}${r||''}</td>`;
+  let html = '<b>Grid comparison</b> — ranked by energy match '
+    + '<span style="color:#6a7">(click a row to use that grid)</span>'
+    + '<table style="border-collapse:collapse;margin-top:.3rem">'
+    + '<tr><th style="text-align:left;padding:2px 10px">grid</th>'
+    + '<th style="padding:2px 10px">match</th><th style="padding:2px 10px">cuts</th>'
+    + '<th style="padding:2px 10px">clips</th></tr>';
+  for (const r of ranked){
+    const isBest = r.grid === best;
+    html += `<tr data-grid="${r.grid}" style="cursor:pointer;`
+      + (isBest ? 'background:#dff0d8;font-weight:600' : '') + '">'
+      + `<td style="padding:2px 10px">${r.grid}${isBest ? ' ★' : ''}</td>`
+      + cell(r.energy_match_pct == null ? null : r.energy_match_pct + '%')
+      + cell(r.cuts) + cell(r.clips) + '</tr>';
+  }
+  html += '</table>';
+  const c = document.getElementById('compare');
+  c.innerHTML = html; c.style.display = 'block';
+  c.querySelectorAll('tr[data-grid]').forEach(tr => tr.addEventListener('click', () => {
+    $('grid').value = tr.dataset.grid; syncGrid();
+    log('● grid set to ' + tr.dataset.grid + ' — now Render or Export');
+  }));
+  if (best){ $('grid').value = best; syncGrid(); }   // preselect the winner
+}
+
 function go(stage){
   const track = encodeURIComponent($('track').value);
   let url = `/api/${stage}?track=${track}`;
-  if (stage === 'arrange') url += arrangeQuery();
+  // arrange + compare carry the arrange knobs (compare sweeps grids itself)
+  if (stage === 'arrange' || stage === 'compare') url += arrangeQuery();
   // render + export both target a specific grid's arrangement
   if (stage === 'render' || stage === 'export') url += `&grid=${$('grid').value}`;
-  if (activeProject && (stage === 'arrange' || stage === 'render' || stage === 'export'))
+  if (activeProject && ['arrange', 'compare', 'render', 'export'].includes(stage))
     url += `&project=${encodeURIComponent(activeProject)}`;   // scope to the project
   stream(url, stage, track);
 }

@@ -596,7 +596,8 @@ class App(tk.Tk):
         btns = ttk.Frame(self, padding=(6, 4))
         btns.pack(fill="x", padx=6)
         for label, stage in (("Analyze", "analyze"), ("Arrange", "arrange"),
-                             ("Render", "render"), ("Export", "export")):
+                             ("Compare", "compare"), ("Render", "render"),
+                             ("Export", "export")):
             ttk.Button(btns, text=label,
                        command=lambda s=stage: self.launch(s)).pack(side="left", padx=4)
         # Cancel the running stage — disabled until one is in flight (see _begin/_end)
@@ -700,6 +701,8 @@ class App(tk.Tk):
                 self._arrange_project_flow()
             else:
                 self._open_arrange_options(track, cat, media)
+        elif stage == "compare":
+            self._compare_flow(track, cat, media, stem)
         elif stage == "export":
             self._export_flow(track, cat, stem)
         elif self.project:                                   # render the project
@@ -803,6 +806,26 @@ class App(tk.Tk):
                                                  cancel=c, **p))
         ArrangeOptions(self, on_ok=run,
                        initial={"grid": self._last_grid or "sections"})
+
+    def _compare_flow(self, track: str, cat: str, media: str, stem: str) -> None:
+        """Arrange the track on every grid and rank them by energy match, so you
+        can pick the scheme that best fits. With a project open, sweeps its
+        scoped clips + options; the winning grid is preselected for Render/Export."""
+        if self.project:
+            self.status.config(text=f"comparing grids for '{self.project.name}' …")
+            self._spawn(lambda c: engine.compare_project(self.project, engine.MEDIA,
+                                                         cancel=c))
+            return
+        analysis = os.path.join(cat, f"{stem}.analysis.json")
+        if not os.path.exists(analysis):
+            messagebox.showinfo(
+                "dv2mv — compare",
+                f"No analysis for '{stem}' yet — run Analyze on the track first.")
+            return
+        manifest = os.path.join(media, "catalog", "manifest.csv")
+        cuts = os.path.join(media, "cuts")
+        self.status.config(text="comparing grids …")
+        self._spawn(lambda c: engine.compare(analysis, manifest, cut_dir=cuts, cancel=c))
 
     def _export_flow(self, track: str, cat: str, stem: str) -> None:
         """Export an arrangement to an editable timeline (OTIO + FCPXML).
@@ -909,6 +932,8 @@ class App(tk.Tk):
                     for p in ev.result["outputs"]:       # exported timeline files
                         self.log.insert("end", f"  ▸ {p}\n")
                     self.log.see("end")
+                elif ev.done and ev.result.get("comparison"):
+                    self._show_comparison(ev.result)
         except queue.Empty:
             pass
         # cyclic GC is disabled (so it never fires on a worker thread and tears
@@ -924,6 +949,22 @@ class App(tk.Tk):
         line = format_arrange_summary(meta)
         self.status.config(text=f"✓ {meta.get('track', '')}: {line}")
         self.log.insert("end", f"  ▸ {line}\n")
+        self.log.see("end")
+
+    def _show_comparison(self, res: dict) -> None:
+        """Log the grid comparison best-first and preselect the winning grid so
+        Render/Export target it (mirrors the web table)."""
+        ranked = res.get("ranked") or res.get("comparison") or []
+        best = res.get("best")
+        self.log.insert("end", "  grid comparison (best energy match first):\n")
+        for r in ranked:
+            pct = "—" if r.get("energy_match_pct") is None else f"{r['energy_match_pct']}%"
+            star = " ★" if r["grid"] == best else ""
+            self.log.insert("end", f"    {r['grid']:<10} {pct:>5}  "
+                            f"cuts={r.get('cuts')}  clips={r.get('clips')}{star}\n")
+        if best:
+            self._last_grid = best       # Render/Export reuse the last grid
+            self.status.config(text=f"✓ best fit: {best} — Render/Export will use it")
         self.log.see("end")
 
 

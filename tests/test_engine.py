@@ -635,3 +635,60 @@ def test_export_project_outputs_into_project_dir(tmp_path, smoke_manifest):
                              lambda e: None)
     assert os.path.dirname(final["otio"]) == p.dir
     assert os.path.basename(final["otio"]) == "Song-sections.otio"
+
+
+# ── compare: arrange across grids, rank by energy match ──────────────────────
+def test_compare_ranks_grids_and_writes_variants(synth_analysis, smoke_manifest, tmp_path):
+    """compare() arranges every grid (leaving each variant on disk) and returns
+    a table ranked best-match-first."""
+    cuts = str(tmp_path / "cuts")
+    grids = ("sections", "downbeats", "beats")
+    final = engine.run_stage(
+        engine.compare(synth_analysis, smoke_manifest, grids=grids,
+                       allow_reuse=True, cut_dir=cuts),
+        lambda e: None)
+    rows = final["comparison"]
+    assert [r["grid"] for r in rows] == list(grids)        # one row per grid, in order
+    assert all(isinstance(r["energy_match_pct"], (int, float)) for r in rows)
+    # ranked is sorted best-match-first; best matches the top of ranked
+    ranked = final["ranked"]
+    pcts = [r["energy_match_pct"] for r in ranked]
+    assert pcts == sorted(pcts, reverse=True)
+    assert final["best"] == ranked[0]["grid"]
+    # every grid's sidecars were actually written (variants ready to render/export)
+    for r in rows:
+        assert os.path.exists(r["render_sh"]) and os.path.exists(r["options"])
+
+
+def test_compare_one_bad_grid_becomes_error_row(synth_analysis, smoke_manifest):
+    """A grid that can't be arranged is recorded as an error row, not an abort."""
+    final = engine.run_stage(
+        engine.compare(synth_analysis, smoke_manifest,
+                       grids=("sections", "bogus"), allow_reuse=True),
+        lambda e: None)
+    by_grid = {r["grid"]: r for r in final["comparison"]}
+    assert by_grid["sections"]["energy_match_pct"] is not None
+    assert by_grid["bogus"]["energy_match_pct"] is None and "error" in by_grid["bogus"]
+    assert final["best"] == "sections"                     # the good one still wins
+
+
+def test_compare_missing_analysis_prompts_analyze(tmp_path, smoke_manifest):
+    with pytest.raises(engine.StageError) as ei:
+        list(engine.compare(str(tmp_path / "nope.analysis.json"), smoke_manifest))
+    assert "Analyze" in str(ei.value)
+
+
+def test_compare_project_sweeps_into_project_dir(tmp_path, smoke_manifest):
+    import shutil
+    media = tmp_path / "media"
+    (media / "catalog_audio").mkdir(parents=True)
+    (media / "catalog").mkdir()
+    write_analysis(str(media / "catalog_audio"), "/tmp/Song.mp3", track="Song")
+    shutil.copy(smoke_manifest, media / "catalog" / "manifest.csv")
+    p = engine.new_project(str(media), "Proj", "Song.mp3", clips="all", allow_reuse=True)
+    final = engine.run_stage(
+        engine.compare_project(p, str(media), grids=("sections", "downbeats")),
+        lambda e: None)
+    assert {r["grid"] for r in final["comparison"]} == {"sections", "downbeats"}
+    have = sorted(f for f in os.listdir(p.dir) if f.startswith("render-"))
+    assert have == ["render-Song-downbeats.sh", "render-Song-sections.sh"]

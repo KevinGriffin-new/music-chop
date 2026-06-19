@@ -56,6 +56,11 @@ finished mp4; `export` emits an editable timeline (OpenTimelineIO + FCP X XML)
 to hand the cut to DaVinci Resolve for finishing (color, audio, transitions,
 delivery). dv2mv decides the *cut*; Resolve *finishes* it.
 
+**Compare grids** (`compare()`) arranges the track on every grid and ranks them
+by energy match, so you can pick the scheme that best fits — each candidate's
+sidecars are left on disk, so the winner is ready to render or export. Both UIs
+have a "Compare grids" button; the winning grid is preselected afterward.
+
 Each stage is a generator yielding `ProgressEvent(stage, message, frac, done,
 result)` and raises `StageError` on failure — no printing, no globals. Stages
 verify their declared outputs exist before reporting `done`.

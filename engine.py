@@ -73,6 +73,9 @@ GRID_HELP = {
     "harmonic":  "one cut at each chord / harmony change",
 }
 
+# the grids compare() sweeps by default (insertion order = display order)
+DEFAULT_GRIDS = tuple(GRID_HELP)
+
 
 # ── progress / error model ─────────────────────────────────────────────────
 @dataclass
@@ -586,6 +589,68 @@ def arrange(
                         else "Arranged.", 1.0, True, result)
 
 
+# ── compare: arrange across grids, rank by energy match ─────────────────────
+def compare(
+    analysis_json: str,
+    manifest: str,
+    grids: tuple = DEFAULT_GRIDS,
+    beats_per_cut: int = 4,
+    allow_reuse: bool = False,
+    drop_blurry: float = 0.0,
+    clip_from: str = "middle",
+    out_dir: Optional[str] = None,
+    cut_dir: Optional[str] = None,
+    cancel: CancelToken = None,
+) -> Iterator[ProgressEvent]:
+    """Arrange a track on several grids and rank them by energy match.
+
+    Each grid is arranged in turn (writing its own tagged sidecars, so every
+    candidate cut survives to render/export), and its summary is collected into
+    a side-by-side table sorted best-match-first — so you can pick the scheme
+    that best fits the track's energy. A grid that fails becomes an error row
+    rather than aborting the whole sweep; the prerequisites are checked once up
+    front so a missing analysis/catalog gives one actionable message, not N.
+    """
+    st = "compare"
+    if not os.path.exists(analysis_json):
+        track = os.path.splitext(os.path.basename(analysis_json))[0].replace(".analysis", "")
+        raise StageError(f"No analysis for '{track}' yet — run Analyze first.")
+    if not os.path.exists(manifest):
+        raise StageError("No clip catalog yet — add footage before comparing.")
+
+    rows: list[dict] = []
+    total = len(grids)
+    for i, g in enumerate(grids):
+        _check_cancel(cancel, st)
+        yield ProgressEvent(st, f"arranging on the {g} grid …", i / total)
+        try:
+            final: dict = {}
+            for ev in arrange(analysis_json, manifest, grid=g,
+                              beats_per_cut=beats_per_cut, allow_reuse=allow_reuse,
+                              drop_blurry=drop_blurry, clip_from=clip_from,
+                              out_dir=out_dir, cut_dir=cut_dir, cancel=cancel):
+                if ev.done:
+                    final = ev.result
+            s = final.get("summary") or {}
+            rows.append({"grid": g, "energy_match_pct": s.get("energy_match_pct"),
+                         "cuts": s.get("cuts"), "clips": s.get("clips"),
+                         "render_sh": final.get("render_sh"),
+                         "options": final.get("options")})
+        except StageError as exc:
+            rows.append({"grid": g, "energy_match_pct": None, "cuts": None,
+                         "clips": None, "error": str(exc)})
+
+    # rank best-match-first; rows that errored (None match) sort to the bottom
+    ranked = sorted(rows, key=lambda r: (r["energy_match_pct"] is not None,
+                                         r["energy_match_pct"] or 0), reverse=True)
+    best = (ranked[0]["grid"] if ranked and ranked[0]["energy_match_pct"] is not None
+            else None)
+    msg = (f"Best fit: {best} ({ranked[0]['energy_match_pct']}% energy match)"
+           if best else "Compared grids (no successful arrangement).")
+    yield ProgressEvent(st, msg, 1.0, True,
+                        {"comparison": rows, "ranked": ranked, "best": best})
+
+
 # ── stage 5: render (cut the clips to the grid + lay the music on top) ──────
 def render(render_sh: str, cancel: CancelToken = None) -> Iterator[ProgressEvent]:
     """Execute the render-<track>.sh produced by arrange() → cut-<track>.mp4.
@@ -816,6 +881,21 @@ def arrange_project(project: Project, media: str,
     # to compare, rather than overwriting one cut.
     yield from arrange(analysis, manifest, out_dir=project.dir, tag=project.grid,
                        cancel=cancel, **project.arrange_opts())
+
+
+def compare_project(project: Project, media: str, grids: tuple = DEFAULT_GRIDS,
+                    cancel: CancelToken = None) -> Iterator[ProgressEvent]:
+    """Compare grids for a project: the project's scoped clips + non-grid options,
+    swept across grids, accumulating each variant in the project folder."""
+    stem = os.path.splitext(project.track)[0]
+    analysis = os.path.join(media, "catalog_audio", f"{stem}.analysis.json")
+    library = os.path.join(media, "catalog", "manifest.csv")
+    manifest = write_scoped_manifest(
+        library, project.clips, os.path.join(project.dir, "manifest-scope.csv"))
+    yield from compare(analysis, manifest, grids=grids, out_dir=project.dir,
+                       beats_per_cut=project.beats_per_cut,
+                       allow_reuse=project.allow_reuse, drop_blurry=project.drop_blurry,
+                       clip_from=project.clip_from, cancel=cancel)
 
 
 def render_project(project: Project,
