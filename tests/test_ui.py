@@ -197,6 +197,8 @@ def test_tk_irix_theme_helper():
     import tkapp
     assert callable(tkapp.apply_irix_theme)
     assert {"bg", "light", "dark", "select", "fg", "field"} <= set(tkapp.IRIX)
+    # IRIX menus/labels are slanted (oblique); the shell font stays fixed-width
+    assert "italic" in tkapp.IRIX_MENU_FONT
 
 
 def test_pick_irix_font_uses_sgi_font_else_falls_back():

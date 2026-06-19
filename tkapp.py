@@ -62,10 +62,14 @@ IRIX = {
     "fg":     "#000000",
     "field":  "#b6b6b6",   # entry / input field
 }
-# The SGI screen font (CC0, vendored in assets/fonts/). Install it for the real
-# look (macOS: copy the .ttf into ~/Library/Fonts); we fall back to a crisp mono
-# family if it isn't available, so the app still runs anywhere.
-IRIX_FONT_FAMILY = "Irix Screen Mono 15"
+# IRIX uses two distinct fonts:
+#  * menus / dialog labels / window titles — a SLANTED (oblique) proportional
+#    font; the signature SGI look. Synthesized here as italic Helvetica.
+#  * the shell / console — a fixed-width screen font. That's the CC0 "Irix
+#    Screen Mono 15" (vendored in assets/fonts/, install into ~/Library/Fonts);
+#    we use it for the green log and fall back to a mono family if absent.
+IRIX_MENU_FONT = ("Helvetica", 12, "italic")   # slanted menu/label text
+IRIX_FONT_FAMILY = "Irix Screen Mono 15"        # fixed shell font
 IRIX_FONT_FALLBACK = "Menlo"            # macOS mono; any mono works
 IRIX_FONT_SIZE = -15                    # negative = pixels (crisp for a bitmap font)
 
@@ -73,8 +77,8 @@ GRIDS = ["sections", "downbeats", "beats", "harmonic"]
 
 
 def pick_irix_font(available) -> tuple:
-    """Choose the SGI font if installed, else a mono fallback. `available` is the
-    set of Tk font families (so this stays pure and testable)."""
+    """The fixed shell font (SGI mono if installed, else a mono fallback).
+    `available` is the set of Tk font families, so this stays pure/testable."""
     fam = IRIX_FONT_FAMILY if IRIX_FONT_FAMILY in available else IRIX_FONT_FALLBACK
     return (fam, IRIX_FONT_SIZE)
 
@@ -91,7 +95,7 @@ def apply_irix_theme(widget) -> "ttk.Style":
     except tk.TclError:
         style.theme_use("classic")
     c = IRIX
-    font = pick_irix_font(set(tkfont.families(widget)))
+    font = IRIX_MENU_FONT            # slanted, like IRIX menus/labels
     style.configure(".", background=c["bg"], foreground=c["fg"],
                     font=font, borderwidth=2)
     style.configure("TButton", background=c["bg"], relief="raised",
@@ -357,8 +361,9 @@ class App(tk.Tk):
         self._pb_frac = None     # last known fraction (None => indeterminate)
         self._pb_pos = 0         # sweep position for the indeterminate animation
 
-        self.log = tk.Text(self, height=10, font=("Courier", 10), bg="black",
-                           fg="#33ff33", relief="sunken", bd=2)   # green-on-black, naturally
+        # the log is the "console" — give it the fixed SGI shell font
+        self.log = tk.Text(self, height=10, font=pick_irix_font(set(tkfont.families(self))),
+                           bg="black", fg="#33ff33", relief="sunken", bd=2)  # green-on-black
         self.log.pack(fill="both", expand=True, padx=6, pady=6)
 
         self.after(100, self._drain)
