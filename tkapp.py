@@ -31,6 +31,7 @@ Run:  python3 tkapp.py        (Tkinter ships with CPython)
 """
 from __future__ import annotations
 
+import gc
 import os
 import platform
 import queue
@@ -823,6 +824,12 @@ class App(tk.Tk):
                     open_in_player(ev.result["video"])   # the Tk preview substitute
         except queue.Empty:
             pass
+        # cyclic GC is disabled (so it never fires on a worker thread and tears
+        # down a Tk object off-thread → Tcl_AsyncDelete abort); reclaim cycles
+        # here instead, on the main thread, ~every 5s.
+        self._gc_tick = getattr(self, "_gc_tick", 0) + 1
+        if self._gc_tick % 50 == 0 and not gc.isenabled():
+            gc.collect()
         self.after(100, self._drain)
 
     def _show_summary(self, meta: dict) -> None:
@@ -834,4 +841,8 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    # Disable automatic cyclic GC: with worker threads, a collection firing on a
+    # worker would finalize a Tk object off the main thread → Tcl_AsyncDelete
+    # abort. We collect on the main thread from the UI pump (_drain) instead.
+    gc.disable()
     App().mainloop()

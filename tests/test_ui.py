@@ -328,6 +328,24 @@ def test_tk_new_project_dialog_preset_clips(app, tmp_path):
             dlg.destroy()
 
 
+def test_tk_drain_collects_gc_on_main_thread(app, monkeypatch):
+    """With cyclic GC disabled (so it can't fire on a worker thread and abort
+    via Tcl_AsyncDelete), the UI pump must reclaim cycles on the main thread."""
+    import gc as _gc
+    calls = []
+    monkeypatch.setattr(_gc, "collect", lambda *a: calls.append(1))
+    was = _gc.isenabled()
+    _gc.disable()
+    try:
+        app._gc_tick = 0
+        for _ in range(50):
+            app._drain()
+        assert calls, "pump did not gc.collect() on the main thread"
+    finally:
+        if was:
+            _gc.enable()
+
+
 def test_tk_arrange_options_present():
     pytest.importorskip("tkinter")
     import tkapp
