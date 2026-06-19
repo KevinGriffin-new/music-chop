@@ -34,6 +34,7 @@ numpy, scipy, scikit-learn, and ffmpeg/ffprobe on PATH.
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import subprocess
@@ -460,6 +461,12 @@ def arrange(
               "energy_match": match}
     _require(st, {k: result[k] for k in
                   ("order", "labels", "markers", "render_sh", "options")}, tail)
+    # carry the recorded options/stats in the event so the UIs can show them
+    try:
+        with open(result["options"]) as fh:
+            result["summary"] = json.load(fh)
+    except (OSError, ValueError):
+        pass
     yield ProgressEvent(st, f"Arranged ({match}% energy match)." if match is not None
                         else "Arranged.", 1.0, True, result)
 

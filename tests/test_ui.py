@@ -212,6 +212,27 @@ def test_pick_irix_font_uses_sgi_font_else_falls_back():
     assert fb == (tkapp.IRIX_FONT_FALLBACK, tkapp.IRIX_FONT_SIZE)
 
 
+def test_format_arrange_summary():
+    pytest.importorskip("tkinter")
+    import tkapp
+    meta = {"track": "Song", "grid": "beats", "cuts": 50, "clips": 300,
+            "energy_match_pct": 88.0, "allow_reuse": True, "beats_per_cut": 2,
+            "drop_blurry": 40.0, "clip_from": "start"}
+    s = tkapp.format_arrange_summary(meta)
+    assert "beats grid" in s and "50 cuts" in s and "88.0% energy match" in s
+    assert "reuse" in s and "2 beats/cut" in s and "drop<40.0" in s and "clip-from start" in s
+    # non-beats grid omits beats/cut; no-reuse omits reuse
+    s2 = tkapp.format_arrange_summary(
+        {"grid": "sections", "cuts": 12, "clips": 9, "energy_match_pct": 91.0,
+         "allow_reuse": False, "clip_from": "middle"})
+    assert "beats/cut" not in s2 and "reuse" not in s2
+
+
+def test_index_shows_arrange_summary(client):
+    html = client.get("/").text
+    assert "id=summary" in html and "ev.result.summary" in html
+
+
 def test_player_command_honors_preferred_player():
     pytest.importorskip("tkinter")
     import tkapp

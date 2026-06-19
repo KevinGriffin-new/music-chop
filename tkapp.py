@@ -130,6 +130,23 @@ def gallery_clip_path(row: dict) -> str:
     c = row.get("clip", "")
     return c[len("file://"):] if c.startswith("file://") else c
 
+
+def format_arrange_summary(meta: dict) -> str:
+    """One-line human summary of an arrange.json (what options/result produced
+    the cut). Pure, so it's testable without a window."""
+    parts = [f"{meta.get('grid')} grid",
+             f"{meta.get('cuts')} cuts",
+             f"{meta.get('energy_match_pct')}% energy match",
+             f"{meta.get('clips')} clips"]
+    if meta.get("allow_reuse"):
+        parts.append("reuse")
+    if meta.get("grid") == "beats":
+        parts.append(f"{meta.get('beats_per_cut')} beats/cut")
+    if meta.get("drop_blurry"):
+        parts.append(f"drop<{meta.get('drop_blurry')}")
+    parts.append(f"clip-from {meta.get('clip_from')}")
+    return " · ".join(str(p) for p in parts)
+
 # ── period-correct palette (Motif/CDE grey) ────────────────────────────────
 GREY = "#b0b0b0"      # the canonical workstation grey
 DARK = "#808080"
@@ -533,11 +550,20 @@ class App(tk.Tk):
                     # the actionable prompt the user asked for (e.g. run Analyze)
                     messagebox.showwarning("dv2mv — can't continue",
                                            ev.message.replace("FAILED: ", ""))
+                elif ev.done and ev.result.get("summary"):
+                    self._show_summary(ev.result["summary"])
                 elif ev.done and ev.result.get("video"):
                     open_in_player(ev.result["video"])   # the Tk preview substitute
         except queue.Empty:
             pass
         self.after(100, self._drain)
+
+    def _show_summary(self, meta: dict) -> None:
+        """Surface the arrange result/options in the status line and log."""
+        line = format_arrange_summary(meta)
+        self.status.config(text=f"✓ {meta.get('track', '')}: {line}")
+        self.log.insert("end", f"  ▸ {line}\n")
+        self.log.see("end")
 
 
 if __name__ == "__main__":

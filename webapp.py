@@ -212,6 +212,8 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <button onclick="go('arrange')">Arrange</button>
 <button onclick="go('render')">Render</button>
 <progress id=bar value=0 max=1 style="width:100%;display:block;margin:1rem 0"></progress>
+<div id=summary style="display:none;margin:.5rem 0;padding:.5rem .7rem;
+  background:#eef3ff;border:1px solid #cdd9f0;border-radius:6px;font-size:13px"></div>
 <pre id=log style="background:#eee;padding:1rem;height:160px;overflow:auto"></pre>
 <video id=vid controls style="width:100%;display:none"></video>
 <script>
@@ -235,6 +237,16 @@ function stream(url, stage, track){
     }
     if (ev.frac != null) determinate(ev.frac); else busy();
     log(`[${ev.stage}] ${ev.message}`);
+    if (ev.done && ev.result && ev.result.summary){
+      const s = ev.result.summary, d = document.getElementById('summary');
+      d.style.display = 'block';
+      d.innerHTML = `<b>${s.track}</b> — ${s.grid} grid · ${s.cuts} cuts · `
+        + `<b>${s.energy_match_pct}% energy match</b> · ${s.clips} clips`
+        + (s.allow_reuse ? ' · reuse' : '')
+        + (s.grid === 'beats' ? ` · ${s.beats_per_cut} beats/cut` : '')
+        + (s.drop_blurry ? ` · drop&lt;${s.drop_blurry}` : '')
+        + ` · clip-from ${s.clip_from}`;
+    }
     if (ev.done){
       es.close(); idle();
       if (stage === 'render' && ev.result && ev.result.video){

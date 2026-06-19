@@ -245,6 +245,10 @@ def test_arrange_builds_sidecars_with_tag(synth_analysis, smoke_manifest):
     assert meta["tag"] == "sections" and "energy_match_pct" in meta
     assert meta["outputs"]["cut"].startswith("cut-") and meta["outputs"]["cut"].endswith(".mp4")
 
+    # the same summary rides along in the event so the UIs can show it
+    assert final["summary"]["grid"] == "sections"
+    assert final["summary"]["energy_match_pct"] == meta["energy_match_pct"]
+
     # and the render script header is stamped with the same options
     sh = open(final["render_sh"]).read()
     assert "grid=sections" in sh and "clip_from=start" in sh
