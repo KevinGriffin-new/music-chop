@@ -482,13 +482,7 @@ class NewProjectDialog(tk.Toplevel):
         self.srcbox = ttk.Frame(cv)
         cv.create_window((0, 0), window=self.srcbox, anchor="nw")
         self.srcbox.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
-        for s in sorted(engine.manifest_sources(
-                os.path.join(media, "catalog", "manifest.csv"))):
-            v = tk.BooleanVar()
-            self._src_vars[s] = v
-            ttk.Checkbutton(self.srcbox, text=s, variable=v).pack(anchor="w", fill="x")
-        if not self._src_vars:
-            ttk.Label(self.srcbox, text="(no catalog yet — add footage first)").pack(anchor="w")
+        self._sources_built = False     # built lazily — see _build_sources()
 
         bar = ttk.Frame(self, padding=4); bar.pack(fill="x", **pad)
         ttk.Button(bar, text="Create", command=self._ok).pack(side="right", padx=4)
@@ -501,7 +495,24 @@ class NewProjectDialog(tk.Toplevel):
         name_entry.focus_set()
         self.after(20, self.focus_force)                # win the first click (macOS)
 
+    def _build_sources(self) -> None:
+        # building 100s of checkbuttons is slow, so defer it until "By source"
+        # is actually chosen — keeps the dialog snappy to open
+        if self._sources_built:
+            return
+        self._sources_built = True
+        for s in sorted(engine.manifest_sources(
+                os.path.join(self.media, "catalog", "manifest.csv"))):
+            v = tk.BooleanVar()
+            self._src_vars[s] = v
+            ttk.Checkbutton(self.srcbox, text=s, variable=v).pack(anchor="w", fill="x")
+        if not self._src_vars:
+            ttk.Label(self.srcbox,
+                      text="(no catalog yet — add footage first)").pack(anchor="w")
+
     def _sync(self) -> None:
+        if self.v_scope.get() == "sources":
+            self._build_sources()
         state = "normal" if self.v_scope.get() == "sources" else "disabled"
         for w in self.srcbox.winfo_children():
             try:

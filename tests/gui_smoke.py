@@ -74,6 +74,17 @@ def center(w):
             w.winfo_rooty() + w.winfo_height() // 2)
 
 
+def click(x, y):
+    """A deliberate click — move, then hold the button down briefly before
+    releasing. An instantaneous pyautogui.click() is sometimes missed by
+    Tk/AppKit on macOS."""
+    import time
+    pyautogui.moveTo(x, y, duration=0.15)
+    pyautogui.mouseDown()
+    time.sleep(0.10)
+    pyautogui.mouseUp()
+
+
 class Smoke:
     def __init__(self, app):
         self.app = app
@@ -90,7 +101,7 @@ class Smoke:
         self.app.focus_force()
         self.app.update_idletasks()
         print(f"· activate window @ {self.app.winfo_rootx() + 12},{self.app.winfo_rooty() + 12}")
-        pyautogui.click(self.app.winfo_rootx() + 12, self.app.winfo_rooty() + 12)
+        click(self.app.winfo_rootx() + 12, self.app.winfo_rooty() + 12)
         self.app.after(500, self._click_new)
 
     def _click_new(self):
@@ -99,7 +110,7 @@ class Smoke:
             return self._finish(False, "could not find the New… button")
         x, y = center(btn)
         print(f"· click New… @ {x},{y}")
-        pyautogui.click(x, y)
+        click(x, y)
         self.app.after(1200, self._fill_and_create)
 
     def _fill_and_create(self):
@@ -111,14 +122,14 @@ class Smoke:
         if name_entry:
             ex, ey = center(name_entry)
             print(f"· click name field @ {ex},{ey}, type {PROJECT_NAME!r}")
-            pyautogui.click(ex, ey)
+            click(ex, ey)
         pyautogui.typewrite(PROJECT_NAME, interval=0.04)
         create = find_widget(dlg, ttk.Button, "Create")
         if not create:
             return self._finish(False, "could not find the Create button")
         x, y = center(create)
         print(f"· click Create @ {x},{y}")
-        pyautogui.click(x, y)
+        click(x, y)
         self.app.after(1200, self._verify)
 
     def _verify(self):
