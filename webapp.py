@@ -162,19 +162,26 @@ def api_analyze(track: str):
 
 
 @app.get("/api/arrange")
-def api_arrange(track: str, grid: str = "beats", beats_per_cut: int = 2,
-                allow_reuse: bool = True):
+def api_arrange(track: str, grid: str = "sections", beats_per_cut: int = 4,
+                allow_reuse: bool = False, drop_blurry: float = 0.0,
+                clip_from: str = "middle"):
     analysis = os.path.join(CATALOG_AUDIO,
                             f"{os.path.splitext(track)[0]}.analysis.json")
     return _sse(engine.arrange(analysis, MANIFEST, grid=grid,
-                               beats_per_cut=beats_per_cut, allow_reuse=allow_reuse))
+                               beats_per_cut=beats_per_cut, allow_reuse=allow_reuse,
+                               drop_blurry=drop_blurry, clip_from=clip_from))
 
 
 @app.get("/api/render")
-def api_render(track: str):
-    # arrange wrote render-<track>-<grid>.sh; resolve the newest one rather than
-    # guessing the suffix, so Render works for whatever track was arranged.
-    sh = engine.find_render_script(CATALOG_AUDIO, track)
+def api_render(track: str, grid: str = ""):
+    # prefer the script for the chosen grid (render that specific arrangement);
+    # else fall back to the newest render-<track>-*.sh.
+    sh = None
+    if grid:
+        stem = os.path.splitext(os.path.basename(track))[0]
+        cand = os.path.join(CATALOG_AUDIO, f"render-{stem}{engine._tag_suffix(grid)}.sh")
+        sh = cand if os.path.exists(cand) else None
+    sh = sh or engine.find_render_script(CATALOG_AUDIO, track)
     if not sh:
         stem = os.path.splitext(os.path.basename(track))[0]
         def need_arrange():
@@ -213,6 +220,23 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <button onclick="go('analyze')">Analyze</button>
 <button onclick="go('arrange')">Arrange</button>
 <button onclick="go('render')">Render</button>
+
+<fieldset style="margin:1rem 0">
+<legend>Arrange options</legend>
+<label>Grid
+  <select id=grid onchange="syncGrid()">
+    <option value=sections>sections</option>
+    <option value=downbeats>downbeats</option>
+    <option value=beats>beats</option>
+    <option value=harmonic>harmonic</option>
+  </select></label>
+<label>Beats/cut <input id=bpc type=number value=4 min=1 max=32 style="width:4rem"></label>
+<label><input id=reuse type=checkbox> allow reuse</label>
+<label>Drop blurry &lt; <input id=blur type=number value=0 min=0 step=1 style="width:5rem"></label>
+<label>Clip from
+  <select id=clipfrom><option value=middle>middle</option><option value=start>start</option></select></label>
+</fieldset>
+
 <progress id=bar value=0 max=1 style="width:100%;display:block;margin:1rem 0"></progress>
 <div id=summary style="display:none;margin:.5rem 0;padding:.5rem .7rem;
   background:#eef3ff;border:1px solid #cdd9f0;border-radius:6px;font-size:13px"></div>
@@ -261,10 +285,28 @@ function stream(url, stage, track){
   es.onerror = () => { log('-- stream error --'); es.close(); idle(); };
 }
 
-function go(stage){
-  const track = encodeURIComponent(document.getElementById('track').value);
-  stream(`/api/${stage}?track=${track}`, stage, track);
+const $ = id => document.getElementById(id);
+
+function syncGrid(){           // beats/cut only matters on the beats grid
+  $('bpc').disabled = $('grid').value !== 'beats';
 }
+
+function arrangeQuery(){
+  return `&grid=${$('grid').value}`
+       + `&beats_per_cut=${$('bpc').value || 4}`
+       + `&allow_reuse=${$('reuse').checked}`
+       + `&drop_blurry=${$('blur').value || 0}`
+       + `&clip_from=${$('clipfrom').value}`;
+}
+
+function go(stage){
+  const track = encodeURIComponent($('track').value);
+  let url = `/api/${stage}?track=${track}`;
+  if (stage === 'arrange') url += arrangeQuery();
+  if (stage === 'render')  url += `&grid=${$('grid').value}`;  // render the chosen grid
+  stream(url, stage, track);
+}
+syncGrid();
 
 async function uploadTrack(){
   const f = document.getElementById('trackfile').files[0];

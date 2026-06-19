@@ -18,7 +18,7 @@ pytest.importorskip("httpx")              # TestClient transport
 from fastapi.testclient import TestClient  # noqa: E402
 
 import webapp  # noqa: E402  (conftest puts the project root on sys.path)
-from conftest import REPO  # noqa: E402
+from conftest import REPO, write_analysis  # noqa: E402
 
 
 @pytest.fixture
@@ -233,6 +233,34 @@ def test_format_arrange_summary():
 def test_index_shows_arrange_summary(client):
     html = client.get("/").text
     assert "id=summary" in html and "ev.result.summary" in html
+
+
+def test_index_has_arrange_form(client):
+    html = client.get("/").text
+    for ctrl in ("id=grid", "id=bpc", "id=reuse", "id=blur", "id=clipfrom"):
+        assert ctrl in html, ctrl
+    assert "arrangeQuery" in html and "syncGrid" in html
+    # all four grids are offered
+    for g in ("sections", "downbeats", "beats", "harmonic"):
+        assert f"value={g}" in html
+
+
+def test_arrange_form_params_flow_through(client, tmp_path, monkeypatch, smoke_manifest):
+    """The form's params reach engine.arrange and come back in the summary."""
+    cat = str(tmp_path / "catalog_audio")
+    os.makedirs(cat)
+    monkeypatch.setattr(webapp, "CATALOG_AUDIO", cat)
+    monkeypatch.setattr(webapp, "MANIFEST", smoke_manifest)
+    write_analysis(cat, "/tmp/Foo.mp3", track="Foo")        # Foo.analysis.json
+    r = client.get("/api/arrange", params={
+        "track": "Foo.mp3", "grid": "beats", "beats_per_cut": 3,
+        "allow_reuse": "true", "drop_blurry": 0, "clip_from": "start"})
+    done = [ln for ln in r.text.splitlines() if '"done": true' in ln][-1]
+    import json
+    ev = json.loads(done.split("data: ", 1)[1])
+    s = ev["result"]["summary"]
+    assert s["grid"] == "beats" and s["beats_per_cut"] == 3
+    assert s["allow_reuse"] is True and s["clip_from"] == "start"
 
 
 def test_player_command_honors_preferred_player():
