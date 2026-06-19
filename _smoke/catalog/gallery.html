@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Clip gallery</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0;
+         background:#15171a; color:#e8e8e8; }
+  header { position:sticky; top:0; background:#1c1f24; padding:12px 16px;
+           border-bottom:1px solid #2c2f36; z-index:5; }
+  h1 { font-size:15px; margin:0 0 8px; font-weight:600; }
+  .ctl { display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:13px; }
+  select, input { background:#0f1113; color:#e8e8e8; border:1px solid #333;
+                  border-radius:6px; padding:5px 8px; font-size:13px; }
+  #grid { display:grid; gap:10px; padding:16px;
+          grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); }
+  .card { background:#1c1f24; border:1px solid #2c2f36; border-radius:8px;
+          overflow:hidden; border-left:4px solid var(--cl,#444); }
+  .card img { width:100%; display:block; background:#000; aspect-ratio:4/3;
+              object-fit:cover; }
+  .meta { padding:7px 9px; font-size:11px; line-height:1.45; }
+  .meta .nm { font-weight:600; font-size:11px; word-break:break-all;
+              color:#cfe3ff; }
+  .bar { height:4px; border-radius:2px; background:#2c2f36; margin-top:4px; }
+  .bar > i { display:block; height:100%; border-radius:2px; background:#5b9dff; }
+  a { color:inherit; text-decoration:none; }
+  .pos { float:right; color:#8a93a0; }
+  .muted { color:#8a93a0; }
+</style></head>
+<body>
+<header>
+  <h1>Clip gallery — <span id="count"></span> clips</h1>
+  <div class="ctl">
+    Sort:
+    <select id="sort">
+      <option value="pos">arranged order</option>
+      <option value="motion">motion energy</option>
+      <option value="luma">brightness</option>
+      <option value="hue">hue</option>
+      <option value="colorful">colorfulness</option>
+      <option value="sharp">sharpness</option>
+      <option value="duration_s">duration</option>
+      <option value="capture_time">capture time</option>
+      <option value="name">name</option>
+    </select>
+    <select id="dir"><option value="asc">asc</option><option value="desc">desc</option></select>
+    <input id="filter" placeholder="filter by name/source/cluster…" size="22">
+    <label class="muted"><input type="checkbox" id="bycluster"> group by cluster</label>
+  </div>
+</header>
+<div id="grid"></div>
+<script>
+const DATA = [{"name": "shot000.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot000.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-00-00", "duration_s": 6.83, "motion": 0.758, "luma": 0.421, "hue": 93.2, "colorful": 33.12, "sharp": 127.4, "pos": 7, "cluster": 0}, {"name": "shot001.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot001.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-01-00", "duration_s": 6.38, "motion": 0.3033, "luma": 0.477, "hue": 210.0, "colorful": 54.95, "sharp": 156.4, "pos": 12, "cluster": 1}, {"name": "shot002.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot002.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-02-00", "duration_s": 2.61, "motion": 0.7558, "luma": 0.618, "hue": 90.2, "colorful": 55.04, "sharp": 295.0, "pos": 8, "cluster": 0}, {"name": "shot003.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot003.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-03-00", "duration_s": 6.58, "motion": 0.9022, "luma": 0.31, "hue": 262.7, "colorful": 54.44, "sharp": 208.4, "pos": 18, "cluster": 1}, {"name": "shot004.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot004.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-04-00", "duration_s": 4.04, "motion": 0.1007, "luma": 0.434, "hue": 219.9, "colorful": 55.22, "sharp": 290.3, "pos": 15, "cluster": 1}, {"name": "shot005.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot005.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-05-00", "duration_s": 4.08, "motion": 0.8653, "luma": 0.26, "hue": 289.8, "colorful": 35.18, "sharp": 14.1, "pos": "", "cluster": ""}, {"name": "shot006.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot006.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-06-00", "duration_s": 5.9, "motion": 0.3988, "luma": 0.825, "hue": 240.5, "colorful": 5.06, "sharp": 153.1, "pos": 14, "cluster": 1}, {"name": "shot007.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot007.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-07-00", "duration_s": 7.01, "motion": 0.2439, "luma": 0.325, "hue": 313.4, "colorful": 15.51, "sharp": 174.6, "pos": 3, "cluster": 2}, {"name": "shot008.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot008.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-08-00", "duration_s": 2.29, "motion": 0.9675, "luma": 0.803, "hue": 161.3, "colorful": 9.42, "sharp": 102.8, "pos": 13, "cluster": 1}, {"name": "shot009.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot009.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-09-00", "duration_s": 4.31, "motion": 0.9328, "luma": 0.109, "hue": 198.5, "colorful": 43.86, "sharp": 168.8, "pos": 16, "cluster": 1}, {"name": "shot010.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot010.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-10-00", "duration_s": 6.61, "motion": 0.5403, "luma": 0.964, "hue": 217.1, "colorful": 37.32, "sharp": 139.0, "pos": 11, "cluster": 1}, {"name": "shot011.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot011.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-11-00", "duration_s": 4.97, "motion": 0.3849, "luma": 0.576, "hue": 104.5, "colorful": 15.42, "sharp": 64.2, "pos": "", "cluster": ""}, {"name": "shot012.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot012.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-12-00", "duration_s": 5.1, "motion": 0.6567, "luma": 0.477, "hue": 32.3, "colorful": 46.67, "sharp": 264.3, "pos": 6, "cluster": 0}, {"name": "shot013.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot013.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-13-00", "duration_s": 7.43, "motion": 0.8425, "luma": 0.898, "hue": 332.3, "colorful": 34.73, "sharp": 123.5, "pos": 1, "cluster": 2}, {"name": "shot014.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot014.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-14-00", "duration_s": 5.79, "motion": 0.2756, "luma": 0.812, "hue": 305.8, "colorful": 54.23, "sharp": 181.0, "pos": 2, "cluster": 2}, {"name": "shot015.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot015.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-15-00", "duration_s": 7.62, "motion": 0.5797, "luma": 0.451, "hue": 237.7, "colorful": 59.79, "sharp": 275.9, "pos": 19, "cluster": 1}, {"name": "shot016.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot016.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-16-00", "duration_s": 6.45, "motion": 0.0824, "luma": 0.613, "hue": 175.1, "colorful": 39.66, "sharp": 255.1, "pos": 10, "cluster": 1}, {"name": "shot017.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot017.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-17-00", "duration_s": 2.32, "motion": 0.7315, "luma": 0.117, "hue": 79.4, "colorful": 48.7, "sharp": 106.4, "pos": 9, "cluster": 0}, {"name": "shot018.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot018.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-18-00", "duration_s": 6.62, "motion": 0.1006, "luma": 0.146, "hue": 251.2, "colorful": 7.49, "sharp": 176.4, "pos": 17, "cluster": 1}, {"name": "shot019.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot019.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-19-00", "duration_s": 7.33, "motion": 0.5342, "luma": 0.681, "hue": 9.6, "colorful": 39.92, "sharp": 185.8, "pos": 4, "cluster": 2}, {"name": "shot020.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot020.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-20-00", "duration_s": 4.82, "motion": 0.3912, "luma": 0.37, "hue": 353.0, "colorful": 7.0, "sharp": 16.3, "pos": "", "cluster": ""}, {"name": "shot021.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot021.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-21-00", "duration_s": 7.71, "motion": 0.185, "luma": 0.124, "hue": 75.8, "colorful": 49.04, "sharp": 281.7, "pos": 5, "cluster": 0}, {"name": "shot022.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot022.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-22-00", "duration_s": 0.67, "motion": 0.4256, "luma": 0.102, "hue": 93.6, "colorful": 17.15, "sharp": 197.6, "pos": "", "cluster": ""}, {"name": "shot023.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot023.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-23-00", "duration_s": 3.13, "motion": 0.1803, "luma": 0.504, "hue": 14.2, "colorful": 10.55, "sharp": 296.6, "pos": 0, "cluster": 2}, {"name": "shot024.mp4", "clip": "file:///sessions/sweet-nice-fermat/mnt/outputs/_smoke/clips/shot024.mp4", "thumb": "thumbs/none.jpg", "source": "cliff", "capture_time": "2004-05-07T20-24-00", "duration_s": 2.0, "motion": 0.3586, "luma": 0.732, "hue": 301.8, "colorful": 55.52, "sharp": 59.1, "pos": "", "cluster": ""}];
+const grid = document.getElementById('grid');
+const palette = ['#5b9dff','#ff8b5b','#5bd6a0','#d68bff','#ffd45b','#ff5b7a',
+                 '#5bd6ff','#a0ff5b','#ff5bd6','#b0b0b0'];
+const maxMotion = Math.max(...DATA.map(d=>d.motion), 1e-9);
+function clusterColor(c){ return c===''? '#444' : palette[c % palette.length]; }
+
+function render(){
+  const key = document.getElementById('sort').value;
+  const dir = document.getElementById('dir').value === 'asc' ? 1 : -1;
+  const q = document.getElementById('filter').value.toLowerCase();
+  const byCluster = document.getElementById('bycluster').checked;
+  let rows = DATA.filter(d =>
+    !q || d.name.toLowerCase().includes(q) || (d.source||'').toLowerCase().includes(q)
+    || String(d.cluster).includes(q));
+  rows.sort((a,b)=>{
+    if (byCluster && a.cluster !== b.cluster) return (a.cluster>b.cluster?1:-1);
+    let x=a[key], y=b[key];
+    if (x===''&&y!=='') return 1; if (y===''&&x!=='') return -1;
+    if (typeof x === 'string') return x.localeCompare(y)*dir;
+    return (x-y)*dir;
+  });
+  grid.innerHTML = rows.map(d => `
+    <div class="card" style="--cl:${clusterColor(d.cluster)}">
+      <a href="${d.clip}" title="open clip">
+        <img loading="lazy" src="${d.thumb}" alt="">
+      </a>
+      <div class="meta">
+        <span class="pos">${d.pos!==''?'#'+d.pos:''}</span>
+        <span class="nm">${d.name}</span><br>
+        <span class="muted">${d.capture_time||'—'} · ${d.duration_s.toFixed(1)}s`
+        + (d.cluster!==''?` · cl ${d.cluster}`:'') + `</span>
+        <div class="bar" title="motion ${d.motion.toFixed(3)}">
+          <i style="width:${(d.motion/maxMotion*100).toFixed(0)}%"></i></div>
+      </div>
+    </div>`).join('');
+  document.getElementById('count').textContent = rows.length;
+}
+['sort','dir','filter','bycluster'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', render);
+});
+// default to motion if no arranged order exists
+if (DATA.every(d=>d.pos==='')) document.getElementById('sort').value='motion';
+render();
+</script>
+</body></html>

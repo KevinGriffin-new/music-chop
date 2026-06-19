@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""
+engine.py — headless core for the DV-footage → music-video pipeline.
+
+This is the single source of truth that BOTH front ends sit on top of:
+
+    web (FastAPI + <video>)  ─┐
+                              ├─▶  engine.py  ─▶  proven CLI scripts
+    Tkinter (classic look)  ─┘                    (scenedetect / clip_features /
+                                                   track_analyze / sync_clips / ffmpeg)
+
+Design goals
+------------
+* One workflow, written once. The UIs are thin clients — they only collect
+  parameters, spawn a stage, and render the ProgressEvents it yields.
+* Don't fork the logic. The existing scripts already work and are the source of
+  truth, so each stage runs them as a subprocess and parses their output into
+  structured progress. (If you later want to drop the subprocess hop, the
+  TODOs below point at the exact functions to inline — but you do not need to.)
+* No global state, no printing. Stages take explicit paths and a callback;
+  they raise StageError on failure. That makes them equally callable from a
+  FastAPI background task or a Tkinter worker thread.
+
+Each stage is a generator-style function:
+
+    for ev in engine.analyze(audio, out_dir):
+        ui.show(ev)            # ev.frac in 0..1 (or None), ev.message, ev.done
+
+or with an explicit callback via run_stage(). See __main__ for a smoke test.
+
+Requires (inherited from the scripts): scenedetect, opencv-python, librosa,
+numpy, scipy, scikit-learn, and ffmpeg/ffprobe on PATH.
+"""
+from __future__ import annotations
+
+import csv
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from glob import glob
+from typing import Callable, Iterator, Optional
+
+# ── project layout ─────────────────────────────────────────────────────────
+# engine.py lives at the project root; the vendored pipeline scripts live in
+# ./pipeline/. Media (footage, audio, render outputs) lives OUTSIDE the repo:
+# set DV2MV_MEDIA to its root (defaults to the current working directory). This
+# keeps the code a small, version-controlled project independent of the media.
+HERE = os.path.dirname(os.path.abspath(__file__))
+PIPELINE = os.path.join(HERE, "pipeline")
+MEDIA = os.path.abspath(os.environ.get("DV2MV_MEDIA", os.getcwd()))
+
+SCRIPT = {
+    "features": os.path.join(PIPELINE, "clip_features.py"),
+    "analyze":  os.path.join(PIPELINE, "track_analyze.py"),
+    "sync":     os.path.join(PIPELINE, "sync_clips.py"),
+}
+
+VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv")
+
+
+# ── progress / error model ─────────────────────────────────────────────────
+@dataclass
+class ProgressEvent:
+    """One unit of feedback from a running stage."""
+    stage: str                       # "detect" | "catalog" | "analyze" | ...
+    message: str = ""                # human-readable line for the UI
+    frac: Optional[float] = None     # 0.0..1.0, or None when indeterminate
+    done: bool = False               # True on the final event
+    result: dict = field(default_factory=dict)  # output paths, stats (final ev)
+
+
+class StageError(RuntimeError):
+    """A stage failed; message carries the captured reason."""
+
+
+ProgressCallback = Callable[[ProgressEvent], None]
+
+
+# ── subprocess plumbing shared by every stage ──────────────────────────────
+def _stream(cmd: list[str], cwd: str) -> Iterator[str]:
+    """Run cmd, yielding combined stdout/stderr lines as they appear.
+
+    Raises StageError(non-zero exit) with the tail of output for context.
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    tail: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        tail = (tail + [line])[-25:]
+        yield line
+    code = proc.wait()
+    if code != 0:
+        raise StageError(f"{cmd[0]} ... exited {code}\n" + "\n".join(tail))
+
+
+_IOFN = re.compile(r"\[(\d+)/(\d+)\]")        # "[3/12] name" -> 3,12
+_MATCH = re.compile(r"energy match:\s*~?(\d+)%")
+
+
+def _require(stage: str, paths: dict, tail: Optional[list[str]] = None) -> dict:
+    """Verify every declared output path exists; raise StageError if not.
+
+    Wrapped scripts can exit 0 yet write nothing (e.g. track_analyze.py
+    swallows a per-track exception and still returns 0). Without this check a
+    stage would report done=True with a result dict pointing at files that were
+    never written. We fail loud instead, surfacing the captured output tail so
+    the real reason is visible.
+    """
+    missing = [str(p) for p in paths.values()
+               if isinstance(p, str) and (p.endswith((".csv", ".json", ".sh",
+                   ".mp4", ".png", ".txt"))) and not os.path.exists(p)]
+    if missing:
+        why = ("\n--- last output lines ---\n" + "\n".join(tail)) if tail else ""
+        raise StageError(
+            f"{stage}: completed without error but expected output(s) missing: "
+            + ", ".join(missing) + why)
+    return paths
+
+
+def _read_summary(path: str):
+    """Read tracks_summary.csv → (fieldnames, {track: row_dict}). Empty if absent."""
+    if not os.path.exists(path):
+        return None, {}
+    with open(path, newline="") as fh:
+        r = csv.DictReader(fh)
+        rows = {row["track"]: row for row in r if row.get("track")}
+        return r.fieldnames, rows
+
+
+def _merge_summary(path: str, before) -> None:
+    """Re-merge the just-written single-track summary back into the snapshot.
+
+    track_analyze.py rewrites tracks_summary.csv with only the track(s) it was
+    handed. `before` is the snapshot taken before the run; this inserts/replaces
+    the freshly-written row(s) into it and writes the combined table in track
+    order, so re-analyzing one track no longer drops the others.
+    """
+    before_fields, before_rows = before
+    new_fields, new_rows = _read_summary(path)
+    if not new_rows:
+        return  # nothing fresh written (shouldn't happen after _require)
+    fields = new_fields or before_fields
+    merged = dict(before_rows)
+    merged.update(new_rows)
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        for track in sorted(merged):
+            w.writerow(merged[track])
+
+
+def run_stage(gen: Iterator[ProgressEvent], on_progress: ProgressCallback) -> dict:
+    """Drive a stage generator with a callback; return the final result dict.
+
+    Convenience for callers that prefer a callback over iterating. The web app
+    iterates directly (to stream SSE); the Tk app uses this from its worker.
+    """
+    result: dict = {}
+    for ev in gen:
+        on_progress(ev)
+        if ev.done:
+            result = ev.result
+    return result
+
+
+# ── stage 0: ingest (normalize mixed sources to one codec/res/fps) ──────────
+def ingest(
+    src_dir: str,
+    out_dir: str,
+    crf: int = 18,
+    preset: str = "slow",
+    fps: Optional[int] = 30,
+    scale: Optional[str] = "720:480",
+) -> Iterator[ProgressEvent]:
+    """Transcode every source in src_dir to a common codec/res/fps in out_dir.
+
+    Optional step. The user already works from imported DV (mp4), so this only
+    matters when sources are mixed: re-encoding to one libx264/res/fps profile
+    is what keeps the downstream `-c copy` concat valid (mismatched params make
+    concat silently corrupt or refuse). No tape/Firewire capture — out of scope.
+
+    Idempotent: a source whose normalized output already exists is skipped.
+    """
+    st = "ingest"
+    if os.path.abspath(src_dir) == os.path.abspath(out_dir):
+        raise StageError("ingest: out_dir must differ from src_dir (would overwrite sources)")
+    os.makedirs(out_dir, exist_ok=True)
+    sources = sorted(
+        p for p in glob(os.path.join(src_dir, "*"))
+        if p.lower().endswith(VIDEO_EXTS)
+    )
+    if not sources:
+        raise StageError(f"ingest: no source video found in {src_dir}")
+
+    vf = []
+    if scale:
+        vf.append(f"scale={scale}:force_original_aspect_ratio=decrease")
+        vf.append(f"pad={scale}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+    if fps:
+        vf.append(f"fps={fps}")
+
+    todo = [(f, os.path.join(out_dir, os.path.splitext(os.path.basename(f))[0] + ".mp4"))
+            for f in sources]
+    todo = [(f, o) for f, o in todo if not os.path.exists(o)]
+    if not todo:
+        outs = [os.path.join(out_dir, os.path.splitext(os.path.basename(f))[0] + ".mp4")
+                for f in sources]
+        yield ProgressEvent(st, "All sources already normalized.", 1.0, True,
+                            {"ingest_dir": out_dir, "normalized": 0, "outputs": outs})
+        return
+
+    total = len(todo)
+    for i, (f, out) in enumerate(todo):
+        yield ProgressEvent(st, f"normalizing — {os.path.basename(f)}", i / total)
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", f]
+        if vf:
+            cmd += ["-vf", ",".join(vf)]
+        cmd += ["-c:v", "libx264", "-crf", str(crf), "-preset", preset,
+                "-c:a", "aac", out]
+        tail = []
+        for line in _stream(cmd, cwd=MEDIA):
+            tail = (tail + [line])[-25:]
+        _require(st, {"out": out}, tail)
+    outs = [os.path.join(out_dir, os.path.splitext(os.path.basename(f))[0] + ".mp4")
+            for f in sources]
+    yield ProgressEvent(st, f"Normalized {total} sources → {out_dir}", 1.0, True,
+                        {"ingest_dir": out_dir, "normalized": total, "outputs": outs})
+
+
+# ── stage 1: detect (scene-split sources into a clip pile) ──────────────────
+def detect(
+    src_dir: str,
+    out_dir: str,
+    threshold: float = 27.0,
+    min_scene_len: str = "0.6s",
+    rate_factor: int = 18,
+    preset: str = "slow",
+) -> Iterator[ProgressEvent]:
+    """Split every source video in src_dir into scene clips in out_dir.
+
+    Mirrors fates-end-chop.sh but per-source, so we can emit real progress.
+    Skips sources already split (idempotent re-runs).
+    """
+    st = "detect"
+    os.makedirs(out_dir, exist_ok=True)
+    sources = sorted(
+        p for p in glob(os.path.join(src_dir, "*"))
+        if p.lower().endswith(VIDEO_EXTS)
+    )
+    # skip any source whose scene clips already exist
+    todo = []
+    for f in sources:
+        base = os.path.splitext(os.path.basename(f))[0]
+        if not glob(os.path.join(out_dir, f"{base}-Scene-*.mp4")):
+            todo.append(f)
+    if not todo:
+        yield ProgressEvent(st, "All sources already split.", 1.0, True,
+                            {"clips_dir": out_dir, "split": 0})
+        return
+
+    total = len(todo)
+    for i, f in enumerate(todo):
+        base = os.path.basename(f)
+        yield ProgressEvent(st, f"detecting scenes — {base}", i / total)
+        cmd = [
+            "scenedetect", "-i", f, "-o", out_dir,
+            "detect-content", "--threshold", str(threshold),
+            "--min-scene-len", min_scene_len,
+            "split-video", "--rate-factor", str(rate_factor), "--preset", preset,
+        ]
+        for _ in _stream(cmd, cwd=MEDIA):
+            pass  # scenedetect is noisy; we report per-file granularity
+    n = len(glob(os.path.join(out_dir, "*-Scene-*.mp4")))
+    if n == 0:
+        raise StageError(
+            f"detect: scenedetect exited 0 but no *-Scene-*.mp4 clips landed in "
+            f"{out_dir} (are the sources valid video?)")
+    yield ProgressEvent(st, f"Split {total} sources → {n} clips.", 1.0, True,
+                        {"clips_dir": out_dir, "split": total, "clips": n})
+
+
+# ── stage 2: catalog (per-clip visual features) ────────────────────────────
+def catalog(
+    clips_dir: str,
+    out_dir: str,
+    frames: int = 12,
+    width: int = 160,
+    recursive: bool = False,
+) -> Iterator[ProgressEvent]:
+    """Extract features → out_dir/manifest.csv (+ histograms.npz, thumbs/).
+
+    TODO(claude-code): to drop the subprocess, call clip_features.analyze()
+    per file directly and write the manifest here. Not required — this works.
+    """
+    st = "catalog"
+    os.makedirs(out_dir, exist_ok=True)
+    cmd = [sys.executable, SCRIPT["features"], clips_dir, "-o", out_dir,
+           "--frames", str(frames), "--width", str(width)]
+    if recursive:
+        cmd.append("--recursive")
+    tail: list[str] = []
+    for line in _stream(cmd, cwd=MEDIA):
+        tail = (tail + [line])[-25:]
+        m = _IOFN.search(line)
+        if m:
+            i, n = int(m.group(1)), int(m.group(2))
+            yield ProgressEvent(st, line, i / n)
+    result = {"manifest": os.path.join(out_dir, "manifest.csv"),
+              "thumbs": os.path.join(out_dir, "thumbs")}
+    _require(st, {"manifest": result["manifest"]}, tail)
+    yield ProgressEvent(st, "Catalog complete.", 1.0, True, result)
+
+
+# ── stage 3: analyze (musical structure of a track) ────────────────────────
+def analyze(
+    audio: str,
+    out_dir: str,
+    sr: int = 22050,
+    plot: bool = True,
+) -> Iterator[ProgressEvent]:
+    """Run track_analyze on a single track → out_dir/<track>.analysis.json (+png).
+
+    Note: track_analyze rewrites tracks_summary.csv for whatever it's given. We
+    run it on the single file; the UI/caller is responsible for merging the
+    summary row if it wants a combined summary (the desktop app should).
+    """
+    st = "analyze"
+    os.makedirs(out_dir, exist_ok=True)
+    track = os.path.splitext(os.path.basename(audio))[0]
+    analysis = os.path.join(out_dir, f"{track}.analysis.json")
+    # Snapshot the combined summary before running: track_analyze rewrites
+    # tracks_summary.csv for only the track it's given, so a single-track run
+    # would otherwise clobber every other row. We restore + merge below.
+    summary_path = os.path.join(out_dir, "tracks_summary.csv")
+    before = _read_summary(summary_path)
+
+    cmd = [sys.executable, SCRIPT["analyze"], audio, "-o", out_dir, "--sr", str(sr)]
+    if plot:
+        cmd.append("--plot")
+    yield ProgressEvent(st, f"analyzing {track} …", None)
+    last, tail = "", []
+    for line in _stream(cmd, cwd=MEDIA):
+        last = line or last
+        tail = (tail + [line])[-25:]
+
+    # track_analyze swallows per-track exceptions and still exits 0, so a
+    # missing JSON here is a real failure — fail loud with the captured tail.
+    _require(st, {"analysis": analysis}, tail)
+    _merge_summary(summary_path, before)
+
+    result = {"analysis": analysis}
+    if plot and os.path.exists(os.path.join(out_dir, f"{track}.png")):
+        result["plot"] = os.path.join(out_dir, f"{track}.png")
+    yield ProgressEvent(st, last or "Analysis complete.", 1.0, True, result)
+
+
+# ── stage 4: arrange (sync clips to the track's structure) ─────────────────
+def _tag_suffix(tag: str) -> str:
+    """Sanitize a tag into a filename-safe '-tag' suffix (mirrors clip_order.py)."""
+    t = re.sub(r"[^A-Za-z0-9._-]+", "-", tag).strip("-")
+    return f"-{t}" if t else ""
+
+
+def arrange(
+    analysis_json: str,
+    manifest: str,
+    grid: str = "sections",            # sections | downbeats | beats | harmonic
+    beats_per_cut: int = 4,
+    allow_reuse: bool = False,
+    drop_blurry: float = 0.0,
+    clip_from: str = "middle",         # middle | start
+    tag: Optional[str] = None,         # output suffix; defaults to the grid name
+) -> Iterator[ProgressEvent]:
+    """Build the cut: order-sync csv, labels, markers, and render-<track>.sh.
+
+    Returns the energy-match % parsed from sync_clips so the UI can show it.
+
+    Outputs are suffixed with `tag` (default: the grid name) so re-running a
+    different grid no longer overwrites a previous cut's sidecars — the user
+    compares arrangements, so each must survive. Pass tag="" for the old
+    unsuffixed names.
+    """
+    st = "arrange"
+    track = os.path.splitext(os.path.basename(analysis_json))[0].replace(".analysis", "")
+    if tag is None:
+        tag = grid
+    cmd = [sys.executable, SCRIPT["sync"], "--analysis", analysis_json,
+           "--manifest", manifest, "--grid", grid,
+           "--beats-per-cut", str(beats_per_cut),
+           "--drop-blurry", str(drop_blurry), "--clip-from", clip_from,
+           "--tag", tag]
+    if allow_reuse:
+        cmd.append("--allow-reuse")
+    yield ProgressEvent(st, f"syncing clips on the {grid} grid …", None)
+    match, tail = None, []
+    for line in _stream(cmd, cwd=MEDIA):
+        tail = (tail + [line])[-25:]
+        m = _MATCH.search(line)
+        if m:
+            match = int(m.group(1))
+    out_dir = os.path.dirname(os.path.abspath(analysis_json))
+    sfx = _tag_suffix(tag)
+    result = {"order": os.path.join(out_dir, f"order-sync-{track}{sfx}.csv"),
+              "labels": os.path.join(out_dir, f"{track}{sfx}.labels.txt"),
+              "markers": os.path.join(out_dir, f"{track}{sfx}.markers.csv"),
+              "render_sh": os.path.join(out_dir, f"render-{track}{sfx}.sh"),
+              "energy_match": match}
+    _require(st, {k: result[k] for k in ("order", "labels", "markers", "render_sh")}, tail)
+    yield ProgressEvent(st, f"Arranged ({match}% energy match)." if match is not None
+                        else "Arranged.", 1.0, True, result)
+
+
+# ── stage 5: render (cut the clips to the grid + lay the music on top) ──────
+def render(render_sh: str) -> Iterator[ProgressEvent]:
+    """Execute the render-<track>.sh produced by arrange() → cut-<track>.mp4.
+
+    The script re-encodes every segment then concats + muxes the audio, so this
+    is the long pole. We stream its lines; segment count isn't reported, so the
+    bar is indeterminate. (TODO(claude-code): for a real progress bar, count
+    rows in the order-sync csv and watch the temp dir, or pass -progress to the
+    final ffmpeg and parse out_time_ms against the track duration.)
+    """
+    st = "render"
+    cwd = os.path.dirname(os.path.abspath(render_sh))
+    track = os.path.basename(render_sh).replace("render-", "").replace(".sh", "")
+    video = os.path.join(cwd, f"cut-{track}.mp4")
+    yield ProgressEvent(st, "rendering — this is the slow one …", None)
+    tail = []
+    for line in _stream(["bash", render_sh], cwd=cwd):
+        line = line.strip()
+        if not line:
+            continue
+        tail = (tail + [line])[-25:]
+        # arrange() emits "[seg/total]" per segment so the bar is real, not a spinner.
+        m = _IOFN.search(line)
+        frac = (int(m.group(1)) / int(m.group(2))) if m else None
+        yield ProgressEvent(st, line, frac)
+    _require(st, {"video": video}, tail)
+    yield ProgressEvent(st, "Render complete.", 1.0, True, {"video": video})
+
+
+# ── smoke test ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    # Minimal proof the core works: run the analyze stage on a track and print
+    # the ProgressEvents. Usage: python3 engine.py "/path/to/02 Erased.mp3" [out_dir]
+    audio = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+        MEDIA, "album-audio", "02 Erased.mp3")
+    out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(MEDIA, "catalog_audio")
+    print(f"engine smoke: analyze {audio!r} → {out!r}\n")
+    final = run_stage(analyze(audio, out, plot=False),
+                      on_progress=lambda e: print(f"  [{e.stage}] "
+                          f"{'' if e.frac is None else f'{e.frac*100:4.0f}% '}{e.message}"))
+    print("\nresult:", final)

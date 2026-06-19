@@ -1,0 +1,26 @@
+# dv2mv dependencies
+#
+# System binaries (install separately, must be on PATH):
+#   ffmpeg, ffprobe        — decode/encode/concat
+#   scenedetect            — scene splitting (pip: scenedetect[opencv])
+#
+# Tkinter ships with CPython (no pip install).
+
+# ── pipeline engine (inherited from the existing scripts) ──
+numpy
+scipy
+librosa            # musical analysis (pulls in numba)
+opencv-python      # clip visual features
+scikit-learn       # clustering / similarity ordering
+matplotlib         # optional analysis plots (track_analyze --plot)
+scenedetect[opencv]
+coverage>=7.14     # numba imports coverage.types.Tracer at load; older
+                   # coverage (<7.14, exposed it as TTracer) breaks the
+                   # librosa import chain. Pin keeps the analyze stage working.
+
+# ── web tier only ──
+fastapi
+uvicorn[standard]
+
+# ── dev / test ──
+pytest             # run: python3 -m pytest dv2mv/tests

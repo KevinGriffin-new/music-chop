@@ -1,0 +1,235 @@
+"""Per-stage tests for the dv2mv engine.
+
+Two tiers:
+  * pure-logic tests (always run): the progress/error contract, _stream, the
+    fail-loud verification, and the summary merge.
+  * integration tests (skip if a tool is missing): each stage end-to-end on
+    tiny generated media.
+"""
+import csv
+import os
+import stat
+import sys
+
+import pytest
+
+from conftest import (engine, REPO, write_analysis, requires_ffmpeg,
+                      requires_scenedetect, requires_librosa, requires_cv2)
+
+
+def drain(gen):
+    """Collect all ProgressEvents from a stage generator into a list."""
+    return list(gen)
+
+
+# ── pure: progress / error contract ─────────────────────────────────────────
+def test_progress_event_defaults():
+    ev = engine.ProgressEvent("detect")
+    assert ev.stage == "detect" and ev.frac is None and ev.done is False
+    assert ev.result == {} and ev.message == ""
+
+
+def test_run_stage_returns_final_result():
+    def fake():
+        yield engine.ProgressEvent("x", "step", 0.5)
+        yield engine.ProgressEvent("x", "done", 1.0, True, {"out": "/tmp/z"})
+    seen = []
+    result = engine.run_stage(fake(), seen.append)
+    assert result == {"out": "/tmp/z"}
+    assert len(seen) == 2 and seen[-1].done
+
+
+def test_stream_yields_lines():
+    lines = list(engine._stream(["bash", "-c", "printf 'a\\nb\\nc\\n'"], cwd=REPO))
+    assert lines == ["a", "b", "c"]
+
+
+def test_stream_raises_with_tail_on_nonzero():
+    with pytest.raises(engine.StageError) as ei:
+        list(engine._stream(["bash", "-c", "echo boom; exit 3"], cwd=REPO))
+    msg = str(ei.value)
+    assert "exited 3" in msg and "boom" in msg
+
+
+# ── pure: fail-loud verification ─────────────────────────────────────────────
+def test_require_passes_when_present(tmp_path):
+    p = tmp_path / "x.csv"
+    p.write_text("ok")
+    assert engine._require("s", {"f": str(p)})["f"] == str(p)
+
+
+def test_require_raises_when_missing(tmp_path):
+    missing = str(tmp_path / "nope.json")
+    with pytest.raises(engine.StageError) as ei:
+        engine._require("analyze", {"analysis": missing}, tail=["line1", "! failed: boom"])
+    msg = str(ei.value)
+    assert "missing" in msg and "nope.json" in msg and "! failed: boom" in msg
+
+
+def test_require_ignores_non_path_values(tmp_path):
+    # ints / None / non-output strings shouldn't be treated as required files
+    engine._require("arrange", {"energy_match": 99, "note": None, "n": "sections"})
+
+
+# ── pure: tracks_summary merge ───────────────────────────────────────────────
+def _write_summary(path, rows):
+    fields = ["track", "duration_s", "tempo_bpm", "key", "n_beats",
+              "n_downbeats", "n_sections", "n_harmonic_changes"]
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields)
+        w.writeheader()
+        for r in rows:
+            w.writerow({**{k: 0 for k in fields}, **r})
+
+
+def test_merge_summary_inserts_and_replaces(tmp_path):
+    path = str(tmp_path / "tracks_summary.csv")
+    # combined summary already has two tracks
+    _write_summary(path, [{"track": "01 A", "tempo_bpm": 100},
+                          {"track": "02 B", "tempo_bpm": 110}])
+    before = engine._read_summary(path)
+    # track_analyze re-runs ONE track and clobbers the file with just that row,
+    # but with a new value (simulating a re-analysis of 02 B)
+    _write_summary(path, [{"track": "02 B", "tempo_bpm": 999}])
+    engine._merge_summary(path, before)
+    _, rows = engine._read_summary(path)
+    assert set(rows) == {"01 A", "02 B"}            # 01 A survived the clobber
+    assert rows["02 B"]["tempo_bpm"] == "999"       # 02 B updated, not duplicated
+    # written in track order
+    assert list(rows) == ["01 A", "02 B"]
+
+
+def test_merge_summary_handles_no_prior_file(tmp_path):
+    path = str(tmp_path / "tracks_summary.csv")
+    before = engine._read_summary(path)               # absent -> (None, {})
+    _write_summary(path, [{"track": "01 A", "tempo_bpm": 100}])
+    engine._merge_summary(path, before)
+    _, rows = engine._read_summary(path)
+    assert list(rows) == ["01 A"]
+
+
+def test_tag_suffix_sanitizes():
+    assert engine._tag_suffix("sections") == "-sections"
+    assert engine._tag_suffix("") == ""
+    assert engine._tag_suffix("fast montage!") == "-fast-montage"
+
+
+# ── fail-loud: a script that exits 0 but writes nothing must raise ───────────
+def test_analyze_fails_loud_on_silent_script(tmp_path, monkeypatch):
+    """Guards the real bug we found: track_analyze swallows a per-track error
+    and still exits 0, so the engine must NOT report a bogus result dict."""
+    stub = tmp_path / "fake_analyze.py"
+    stub.write_text(
+        "import sys\n"
+        "print('[1/1] thing'); print('   ! failed: kaboom'); sys.exit(0)\n")
+    monkeypatch.setitem(engine.SCRIPT, "analyze", str(stub))
+    with pytest.raises(engine.StageError) as ei:
+        drain(engine.analyze(str(tmp_path / "whatever.mp3"), str(tmp_path), plot=False))
+    assert "missing" in str(ei.value) and "kaboom" in str(ei.value)
+
+
+def test_ingest_rejects_same_dir(tmp_path):
+    with pytest.raises(engine.StageError):
+        drain(engine.ingest(str(tmp_path), str(tmp_path)))
+
+
+# ── integration: ingest ──────────────────────────────────────────────────────
+@requires_ffmpeg
+def test_ingest_normalizes_and_is_idempotent(clips_dir, tmp_path):
+    out = str(tmp_path / "ingested")
+    evs = drain(engine.ingest(clips_dir, out, preset="ultrafast", fps=None, scale=None))
+    final = evs[-1]
+    assert final.done and final.frac == 1.0
+    assert final.result["normalized"] == 2
+    assert all(os.path.exists(p) for p in final.result["outputs"])
+    # second run skips everything
+    evs2 = drain(engine.ingest(clips_dir, out, preset="ultrafast"))
+    assert evs2[-1].result["normalized"] == 0
+
+
+# ── integration: detect ──────────────────────────────────────────────────────
+@requires_scenedetect
+def test_detect_splits_into_clips(clips_dir, tmp_path):
+    out = str(tmp_path / "scenes")
+    # detect runs per-source; one tiny source yields at least one scene clip
+    import shutil as _sh
+    src = str(tmp_path / "one_src")
+    os.makedirs(src, exist_ok=True)
+    first = sorted(f for f in os.listdir(clips_dir) if f.endswith(".mp4"))[0]
+    _sh.copy(os.path.join(clips_dir, first),
+             os.path.join(src, "src2004.05.07_20-00-09.mp4"))
+    evs = drain(engine.detect(src, out))
+    final = evs[-1]
+    assert final.done and final.result["clips"] >= 1
+    assert os.path.isdir(final.result["clips_dir"])
+
+
+# ── integration: catalog ─────────────────────────────────────────────────────
+@requires_cv2
+@requires_ffmpeg
+def test_catalog_writes_manifest(clips_dir, tmp_path):
+    out = str(tmp_path / "catalog")
+    evs = drain(engine.catalog(clips_dir, out, frames=4, width=120))
+    final = evs[-1]
+    assert final.done and os.path.exists(final.result["manifest"])
+    # fractional progress actually advanced
+    fracs = [e.frac for e in evs if e.frac is not None]
+    assert fracs and max(fracs) <= 1.0
+    with open(final.result["manifest"]) as fh:
+        assert len(list(csv.DictReader(fh))) == 2
+
+
+# ── integration: analyze (real librosa) ──────────────────────────────────────
+@requires_librosa
+@requires_ffmpeg
+def test_analyze_writes_json_and_merges(tiny_wav, tmp_path):
+    out = str(tmp_path / "audio_out")
+    final = engine.run_stage(engine.analyze(tiny_wav, out, plot=False), lambda e: None)
+    assert os.path.exists(final["analysis"])
+    import json
+    an = json.load(open(final["analysis"]))
+    assert an["track"] == "synthsong" and an["duration_s"] > 0
+    assert os.path.exists(os.path.join(out, "tracks_summary.csv"))
+
+
+# ── integration: arrange (sync_clips, numpy only) ────────────────────────────
+def test_arrange_builds_sidecars_with_tag(synth_analysis, smoke_manifest):
+    final = engine.run_stage(
+        engine.arrange(synth_analysis, smoke_manifest, grid="sections"),
+        lambda e: None)
+    for key in ("order", "labels", "markers", "render_sh"):
+        assert os.path.exists(final[key]), f"{key} not written"
+    # tag defaults to the grid, so the suffix is in the names
+    assert "-sections" in os.path.basename(final["render_sh"])
+    assert isinstance(final["energy_match"], int)
+    # render script is executable
+    assert os.stat(final["render_sh"]).st_mode & stat.S_IXUSR
+
+
+def test_arrange_different_grids_do_not_clobber(synth_analysis, smoke_manifest):
+    r1 = engine.run_stage(engine.arrange(synth_analysis, smoke_manifest, grid="sections"),
+                          lambda e: None)
+    r2 = engine.run_stage(engine.arrange(synth_analysis, smoke_manifest, grid="downbeats"),
+                          lambda e: None)
+    assert r1["render_sh"] != r2["render_sh"]
+    assert os.path.exists(r1["render_sh"]) and os.path.exists(r2["render_sh"])
+
+
+# ── integration: render (full chain, exercises per-segment progress) ─────────
+@requires_cv2
+@requires_ffmpeg
+def test_render_produces_video_with_real_progress(clips_dir, tiny_wav, tmp_path):
+    # catalog the real generated clips so the manifest points at files that exist
+    cat = str(tmp_path / "catalog")
+    engine.run_stage(engine.catalog(clips_dir, cat, frames=4, width=120), lambda e: None)
+    manifest = os.path.join(cat, "manifest.csv")
+    analysis = write_analysis(str(tmp_path), tiny_wav, track="synthsong", duration=4.0)
+    arr = engine.run_stage(
+        engine.arrange(analysis, manifest, grid="sections", allow_reuse=True),
+        lambda e: None)
+    evs = drain(engine.render(arr["render_sh"]))
+    final = evs[-1]
+    assert final.done and os.path.exists(final.result["video"])
+    # the per-segment echoes give a real (non-None) advancing fraction
+    fracs = [e.frac for e in evs if e.frac is not None]
+    assert fracs and max(fracs) == pytest.approx(1.0)
