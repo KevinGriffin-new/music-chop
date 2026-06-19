@@ -12,7 +12,8 @@ core (`engine.py`) wraps a set of proven pipeline scripts; two thin front ends
 
 **Bugs / issues:** https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv — see
 [REPORTING.md](REPORTING.md) for what to include (for Tk bugs, the launch
-terminal's traceback is usually the whole answer).
+terminal's traceback is usually the whole answer). Planned features live in
+[ROADMAP.md](ROADMAP.md) (kept separate from the bug tracker).
 
 ## Layout
 
