@@ -60,6 +60,7 @@ SCRIPT = {
     "features": os.path.join(PIPELINE, "clip_features.py"),
     "analyze":  os.path.join(PIPELINE, "track_analyze.py"),
     "sync":     os.path.join(PIPELINE, "sync_clips.py"),
+    "export":   os.path.join(PIPELINE, "export_timeline.py"),
 }
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv")
@@ -622,6 +623,65 @@ def render(render_sh: str, cancel: CancelToken = None) -> Iterator[ProgressEvent
     yield ProgressEvent(st, f"Render complete → {video}", 1.0, True, {"video": video})
 
 
+# ── stage 6: export (emit an editable timeline for Resolve finishing) ───────
+def find_arrange_json(out_dir: str, track: str,
+                      grid: Optional[str] = None) -> Optional[str]:
+    """Resolve a track to the arrange.json arrange() wrote (newest, or a specific
+    grid's). The export stage reads it; mirrors find_render_script()."""
+    stem = os.path.splitext(os.path.basename(track))[0]
+    if grid:
+        cand = os.path.join(out_dir, f"{stem}{_tag_suffix(grid)}.arrange.json")
+        if os.path.exists(cand):
+            return cand
+    cands = glob(os.path.join(out_dir, f"{stem}*.arrange.json"))
+    return max(cands, key=os.path.getmtime) if cands else None
+
+
+def export(
+    arrange_json: str,
+    out_dir: Optional[str] = None,
+    formats: tuple = ("otio", "fcpxml"),
+    cancel: CancelToken = None,
+) -> Iterator[ProgressEvent]:
+    """Emit an editable timeline (OTIO / FCPXML) from an arrangement.
+
+    dv2mv decides the cut; Resolve finishes it. This reads the arrange.json (and
+    its order CSV) and writes a timeline Resolve imports — an alternative to (or
+    companion of) the ffmpeg render. Fast: no transcode, just the interchange
+    files. Outputs land next to the arrangement unless out_dir is given.
+    """
+    st = "export"
+    if not os.path.exists(arrange_json):
+        raise StageError(
+            "No arrangement to export yet — run Arrange on the track first "
+            f"(missing {os.path.basename(arrange_json)}).")
+    cmd = [sys.executable, SCRIPT["export"], "--arrange", arrange_json,
+           "--formats", ",".join(formats)]
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        cmd += ["--out", out_dir]
+    yield ProgressEvent(st, "exporting editable timeline …", None)
+    wrote, tail = [], []
+    for line in _stream(cmd, cwd=MEDIA, cancel=cancel):
+        line = line.strip()
+        if not line:
+            continue
+        tail = (tail + [line])[-25:]
+        if line.startswith("wrote "):
+            wrote.append(line[len("wrote "):].strip())
+    missing = [p for p in wrote if not os.path.exists(p)]
+    if not wrote or missing:
+        why = ("reported writing missing file(s): " + ", ".join(missing)) if missing \
+            else "produced no timeline files"
+        raise StageError(f"export: {why}\n" + "\n".join(tail))
+    result: dict = {"outputs": wrote}
+    for p in wrote:                                  # also key by extension (otio/fcpxml)
+        result[os.path.splitext(p)[1].lstrip(".")] = p
+    yield ProgressEvent(
+        st, "Exported timeline → " + ", ".join(os.path.basename(p) for p in wrote),
+        1.0, True, result)
+
+
 # ── projects ────────────────────────────────────────────────────────────────
 # A project scopes one music video: a track + a clip selection (a subset of the
 # shared library catalog, or "all") + arrange options + its own output folder.
@@ -766,6 +826,17 @@ def render_project(project: Project,
     sh = cand if os.path.exists(cand) else (
         find_render_script(project.dir, project.track) or cand)
     yield from render(sh, cancel=cancel)
+
+
+def export_project(project: Project, media: str, formats: tuple = ("otio", "fcpxml"),
+                   cancel: CancelToken = None) -> Iterator[ProgressEvent]:
+    """Export the project's current grid's arrangement to an editable timeline
+    (into the project folder, next to its render/cut)."""
+    stem = os.path.splitext(project.track)[0]
+    cand = os.path.join(project.dir, f"{stem}{_tag_suffix(project.grid)}.arrange.json")
+    arr = cand if os.path.exists(cand) else (
+        find_arrange_json(project.dir, project.track) or cand)
+    yield from export(arr, out_dir=project.dir, formats=formats, cancel=cancel)
 
 
 # ── smoke test ─────────────────────────────────────────────────────────────

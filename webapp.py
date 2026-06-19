@@ -10,8 +10,9 @@ ProgressEvents to the browser over Server-Sent Events (SSE). The browser shows a
 progress bar from `frac`, then drops the finished cut into a <video> element —
 the inline-preview win that makes the web tier worth building first.
 
-This is a skeleton: enough to upload media, run analyze→arrange→render, browse
-the catalog gallery, and preview the result. Uploading a track saves it to
+This is a skeleton: enough to upload media, run analyze→arrange→render (or
+→export an editable Resolve timeline), browse the catalog gallery, and preview
+the result. Uploading a track saves it to
 album-audio/; uploading footage saves to sources/ then scene-splits + catalogs
 it; /api/gallery reuses clip_gallery.py's HTML. Each running stage gets a job id
 + cancel token (the Cancel button POSTs /api/cancel?job=…), so a long
@@ -319,6 +320,25 @@ def api_render(track: str = "", grid: str = "", project: str = ""):
     return _sse(engine.render(sh, cancel=cancel), cancel=cancel, job_id=job_id)
 
 
+@app.get("/api/export")
+def api_export(track: str = "", grid: str = "", project: str = ""):
+    """Export the arrangement to an editable timeline (OTIO + FCPXML) for Resolve."""
+    job_id, cancel = _new_job()
+    if project:
+        return _sse(engine.export_project(engine.load_project(MEDIA, project), MEDIA,
+                                          cancel=cancel),
+                    cancel=cancel, job_id=job_id)
+    arr = engine.find_arrange_json(CATALOG_AUDIO, track, grid or None)
+    if not arr:
+        stem = os.path.splitext(os.path.basename(track))[0]
+        def need_arrange():
+            raise engine.StageError(
+                f"No arrangement for '{stem}' yet — run Arrange first.")
+            yield  # noqa: unreachable — makes this a generator for _sse
+        return _sse(need_arrange(), cancel=cancel, job_id=job_id)
+    return _sse(engine.export(arr, cancel=cancel), cancel=cancel, job_id=job_id)
+
+
 # ── projects (mirror the Tk project flow on the shared engine model) ─────────
 @app.get("/api/projects")
 def api_projects():
@@ -416,6 +436,7 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <button onclick="go('analyze')">Analyze</button>
 <button onclick="go('arrange')">Arrange</button>
 <button onclick="go('render')">Render</button>
+<button onclick="go('export')" title="emit an editable timeline (OTIO + FCPXML) for DaVinci Resolve">Export ⤓</button>
 <button id=cancelbtn onclick="cancelJob()" disabled>Cancel</button>
 
 <fieldset style="margin:1rem 0">
@@ -441,6 +462,8 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <pre id=log style="background:#eee;padding:1rem;height:160px;overflow:auto"></pre>
 <video id=vid controls style="width:100%;display:none"></video>
 <div id=vidpath style="display:none;margin:.4rem 0;font:12px ui-monospace,monospace;
+  color:#444;word-break:break-all"></div>
+<div id=exports style="display:none;margin:.4rem 0;font:12px ui-monospace,monospace;
   color:#444;word-break:break-all"></div>
 <script>
 const log = m => document.getElementById('log').textContent += m + "\\n";
@@ -497,6 +520,14 @@ function stream(url, stage, track){
         const vp = document.getElementById('vidpath');
         vp.textContent = '✓ wrote ' + ev.result.video;
         vp.style.display = 'block';
+      }
+      if (stage === 'export' && ev.result && ev.result.outputs){
+        const e = document.getElementById('exports');
+        e.innerHTML = '✓ timeline: ' + ev.result.outputs.map(p =>
+          `<a href="/api/clip?path=${encodeURIComponent(p)}" download>`
+          + p.split('/').pop() + '</a>').join(' · ')
+          + ' — import into DaVinci Resolve';
+        e.style.display = 'block';
       }
     }
   };
@@ -583,8 +614,9 @@ function go(stage){
   const track = encodeURIComponent($('track').value);
   let url = `/api/${stage}?track=${track}`;
   if (stage === 'arrange') url += arrangeQuery();
-  if (stage === 'render')  url += `&grid=${$('grid').value}`;  // render the chosen grid
-  if (activeProject && (stage === 'arrange' || stage === 'render'))
+  // render + export both target a specific grid's arrangement
+  if (stage === 'render' || stage === 'export') url += `&grid=${$('grid').value}`;
+  if (activeProject && (stage === 'arrange' || stage === 'render' || stage === 'export'))
     url += `&project=${encodeURIComponent(activeProject)}`;   // scope to the project
   stream(url, stage, track);
 }

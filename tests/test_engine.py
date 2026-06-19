@@ -18,7 +18,8 @@ import time
 import pytest
 
 from conftest import (engine, REPO, write_analysis, requires_ffmpeg,
-                      requires_scenedetect, requires_librosa, requires_cv2)
+                      requires_scenedetect, requires_librosa, requires_cv2,
+                      requires_otio, requires_fcpx)
 
 
 def drain(gen):
@@ -546,3 +547,91 @@ def test_arrange_project_keeps_grid_variants(tmp_path, smoke_manifest):
     engine.run_stage(engine.arrange_project(p, str(media)), lambda e: None)
     have = sorted(f for f in os.listdir(p.dir) if f.startswith("render-"))
     assert have == ["render-Song-downbeats.sh", "render-Song-sections.sh"]   # both kept
+
+
+# ── export: editable timeline (OTIO / FCPXML) ────────────────────────────────
+@requires_otio
+def test_build_timeline_structure():
+    """Pure: meta + order rows -> an OTIO timeline (V1 cut clips, A1 music) with
+    frame-accurate source trims, no file I/O."""
+    import opentimelineio as otio
+    from pipeline.export_timeline import build_timeline
+    meta = {"track": "Song", "tag": "sections", "music": "/tmp/song.mp3",
+            "duration_s": 4.0, "timeline": {"fps": 30, "width": 720, "height": 480}}
+    rows = [{"clip": "/v/a.mp4", "slot_dur_s": "2.0", "clip_in_s": "3.0",
+             "clip_src_dur_s": "6.83"},
+            {"clip": "/v/b.mp4", "slot_dur_s": "2.0", "clip_in_s": "0.0",
+             "clip_src_dur_s": "2.0"}]
+    tl = build_timeline(meta, rows)
+    video, audio = tl.tracks[0], tl.tracks[1]
+    assert video.kind == otio.schema.TrackKind.Video
+    assert audio.kind == otio.schema.TrackKind.Audio
+    clips = lambda trk: [c for c in trk if isinstance(c, otio.schema.Clip)]
+    vclips = clips(video)
+    assert [c.name for c in vclips] == ["a", "b"]
+    # first slot: middle in-point 3.0s @30fps = frame 90, 2.0s = 60 frames
+    assert vclips[0].source_range.start_time.value == 90
+    assert vclips[0].source_range.duration.value == 60
+    aclips = clips(audio)
+    assert len(aclips) == 1                       # the music, full song
+    assert aclips[0].source_range.duration.value == round(4.0 * 30)
+
+
+@requires_otio
+def test_export_writes_otio_and_reads_back(synth_analysis, smoke_manifest, tmp_path):
+    """End-to-end: arrange -> export. The .otio round-trips to the same clip
+    count, and the timeline name carries the tag."""
+    import opentimelineio as otio
+    arr = engine.run_stage(
+        engine.arrange(synth_analysis, smoke_manifest, grid="sections",
+                       allow_reuse=True),
+        lambda e: None)
+    out = str(tmp_path / "export")
+    final = engine.run_stage(engine.export(arr["options"], out_dir=out,
+                                           formats=("otio",)), lambda e: None)
+    assert "otio" in final and os.path.exists(final["otio"])
+    tl = otio.adapters.read_from_file(final["otio"])
+    # one clip per arranged slot on V1, plus the music on A1
+    import csv as _csv
+    n_slots = len(list(_csv.DictReader(open(arr["order"]))))
+    clips = lambda trk: [c for c in trk if isinstance(c, otio.schema.Clip)]
+    assert len(clips(tl.tracks[0])) == n_slots
+    assert len(clips(tl.tracks[1])) == 1
+    assert tl.name.endswith("-sections")
+
+
+@requires_fcpx
+def test_export_writes_fcpxml(synth_analysis, smoke_manifest, tmp_path):
+    arr = engine.run_stage(
+        engine.arrange(synth_analysis, smoke_manifest, grid="sections",
+                       allow_reuse=True),
+        lambda e: None)
+    out = str(tmp_path / "export")
+    final = engine.run_stage(engine.export(arr["options"], out_dir=out,
+                                           formats=("fcpxml",)), lambda e: None)
+    assert "fcpxml" in final and os.path.exists(final["fcpxml"])
+    head = open(final["fcpxml"]).read(200)
+    assert "<fcpxml" in head                      # a real FCPXML document
+
+
+def test_export_missing_arrange_prompts_arrange(tmp_path):
+    """No arrangement yet → an actionable StageError, not a cryptic file error."""
+    with pytest.raises(engine.StageError) as ei:
+        list(engine.export(str(tmp_path / "nope.arrange.json")))
+    assert "Arrange" in str(ei.value)
+
+
+@requires_otio
+def test_export_project_outputs_into_project_dir(tmp_path, smoke_manifest):
+    import shutil
+    media = tmp_path / "media"
+    (media / "catalog_audio").mkdir(parents=True)
+    (media / "catalog").mkdir()
+    write_analysis(str(media / "catalog_audio"), "/tmp/Song.mp3", track="Song")
+    shutil.copy(smoke_manifest, media / "catalog" / "manifest.csv")
+    p = engine.new_project(str(media), "Proj", "Song.mp3", clips="all", grid="sections")
+    engine.run_stage(engine.arrange_project(p, str(media)), lambda e: None)
+    final = engine.run_stage(engine.export_project(p, str(media), formats=("otio",)),
+                             lambda e: None)
+    assert os.path.dirname(final["otio"]) == p.dir
+    assert os.path.basename(final["otio"]) == "Song-sections.otio"

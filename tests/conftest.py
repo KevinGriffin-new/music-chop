@@ -41,12 +41,27 @@ def _have_lib(name):
 
 HAVE_LIBROSA = _have_lib("librosa")
 HAVE_CV2 = _have_lib("cv2")
+HAVE_OTIO = _have_lib("opentimelineio")
+
+
+def _have_fcpx_adapter():
+    """OTIO present AND the FCP X XML adapter registered (separate pip package)."""
+    if not HAVE_OTIO:
+        return False
+    import opentimelineio as otio
+    return "fcpx_xml" in otio.adapters.available_adapter_names()
+
+
+HAVE_FCPX = _have_fcpx_adapter()
 
 requires_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg not on PATH")
 requires_scenedetect = pytest.mark.skipif(
     not (HAVE_SCENEDETECT and HAVE_FFMPEG), reason="scenedetect/ffmpeg not on PATH")
 requires_librosa = pytest.mark.skipif(not HAVE_LIBROSA, reason="librosa not importable")
 requires_cv2 = pytest.mark.skipif(not HAVE_CV2, reason="opencv not importable")
+requires_otio = pytest.mark.skipif(not HAVE_OTIO, reason="opentimelineio not importable")
+requires_fcpx = pytest.mark.skipif(
+    not HAVE_FCPX, reason="otio FCP X XML adapter not installed")
 
 
 def _make_clip(path, duration=2, size="320x240", rate=30):

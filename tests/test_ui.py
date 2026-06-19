@@ -191,6 +191,28 @@ def test_tkapp_has_cancel_machinery():
     assert hasattr(tkapp.App, "cancel_stage")
 
 
+# ── timeline export (OTIO/FCPXML) wiring ─────────────────────────────────────
+def test_export_missing_arrange_streams_error_event(client, tmp_path, monkeypatch):
+    """Exporting with no arrangement yields a clean SSE error event prompting
+    Arrange (not a dead stream) — and doesn't need OTIO to reach that path."""
+    monkeypatch.setattr(webapp, "CATALOG_AUDIO", str(tmp_path / "catalog_audio"))
+    body = client.get("/api/export", params={"track": "Ghostsong.mp3"}).text
+    assert ('"error": true' in body or '"error":true' in body)
+    assert "Arrange" in body
+
+
+def test_index_has_export_control(client):
+    html = client.get("/").text
+    assert "go('export')" in html          # Export button wired
+    assert "id=exports" in html            # output-links area present
+
+
+def test_tkapp_has_export_flow():
+    pytest.importorskip("tkinter")
+    import tkapp
+    assert hasattr(tkapp.App, "_export_flow")
+
+
 def test_tk_cancel_button_present_and_idle_safe(app):
     """Cancel is disabled while idle, and pressing it with nothing running is a
     safe no-op (must not raise or arm a phantom stop)."""

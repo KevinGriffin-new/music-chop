@@ -25,9 +25,11 @@ File pickers (Add ▸ Music track… / Video footage…), the clip gallery (Gall
 the IRIX arrange-options dialog, and projects (New… / Open… — a project scopes a
 track + a clip selection + arrange options to its own folder) are all wired.
 Clip selection is gallery-based: multi-select thumbnails, then "New project from
-selection…". A running stage is cancellable: the Cancel button sets a threading
-Event the worker hands to the engine, which terminates the underlying
-subprocess (and, for render, its ffmpeg child group).
+selection…". The Export button emits an editable timeline (OTIO + FCPXML) for
+finishing in DaVinci Resolve, as an alternative to the baked ffmpeg render. A
+running stage is cancellable: the Cancel button sets a threading Event the
+worker hands to the engine, which terminates the underlying subprocess (and, for
+render, its ffmpeg child group).
 
 Run:  python3 tkapp.py        (Tkinter ships with CPython)
 """
@@ -594,7 +596,7 @@ class App(tk.Tk):
         btns = ttk.Frame(self, padding=(6, 4))
         btns.pack(fill="x", padx=6)
         for label, stage in (("Analyze", "analyze"), ("Arrange", "arrange"),
-                             ("Render", "render")):
+                             ("Render", "render"), ("Export", "export")):
             ttk.Button(btns, text=label,
                        command=lambda s=stage: self.launch(s)).pack(side="left", padx=4)
         # Cancel the running stage — disabled until one is in flight (see _begin/_end)
@@ -698,6 +700,8 @@ class App(tk.Tk):
                 self._arrange_project_flow()
             else:
                 self._open_arrange_options(track, cat, media)
+        elif stage == "export":
+            self._export_flow(track, cat, stem)
         elif self.project:                                   # render the project
             self._spawn(lambda c: engine.render_project(self.project, cancel=c))
         else:
@@ -800,6 +804,29 @@ class App(tk.Tk):
         ArrangeOptions(self, on_ok=run,
                        initial={"grid": self._last_grid or "sections"})
 
+    def _export_flow(self, track: str, cat: str, stem: str) -> None:
+        """Export an arrangement to an editable timeline (OTIO + FCPXML).
+
+        With a project open, export its current grid; else the library
+        arrangement for the chosen grid (or the newest one)."""
+        if self.project:
+            self.status.config(text=f"exporting project '{self.project.name}' …")
+            self._spawn(lambda c: engine.export_project(self.project, engine.MEDIA,
+                                                        cancel=c))
+            return
+        arr = None
+        if self._last_grid:
+            cand = os.path.join(cat, f"{stem}{engine._tag_suffix(self._last_grid)}.arrange.json")
+            arr = cand if os.path.exists(cand) else None
+        arr = arr or engine.find_arrange_json(cat, track)
+        if not arr:
+            messagebox.showinfo(
+                "dv2mv — export",
+                f"No arrangement for '{stem}' yet — run Arrange first.")
+            return
+        self.status.config(text="exporting editable timeline …")
+        self._spawn(lambda c: engine.export(arr, cancel=c))
+
     # ── file pickers: bring in new media from anywhere on disk ──────────────
     def add_track(self) -> None:
         """Pick an audio file and analyze it in place (no copy)."""
@@ -878,6 +905,10 @@ class App(tk.Tk):
                     self._show_summary(ev.result["summary"])
                 elif ev.done and ev.result.get("video"):
                     open_in_player(ev.result["video"])   # the Tk preview substitute
+                elif ev.done and ev.result.get("outputs"):
+                    for p in ev.result["outputs"]:       # exported timeline files
+                        self.log.insert("end", f"  ▸ {p}\n")
+                    self.log.see("end")
         except queue.Empty:
             pass
         # cyclic GC is disabled (so it never fires on a worker thread and tears

@@ -39,7 +39,7 @@ export DV2MV_MEDIA=/Volumes/Footage/musicvideo
 
 It defaults to the current working directory if unset.
 
-## The six stages
+## The stages
 
 | stage   | engine fn   | wraps                  | output |
 |---------|-------------|------------------------|--------|
@@ -49,6 +49,12 @@ It defaults to the current working directory if unset.
 | analyze | `analyze()` | `track_analyze.py`     | `<track>.analysis.json` (+ `.png`) |
 | arrange | `arrange()` | `sync_clips.py`        | `order-sync-*.csv`, labels, markers, `render-*.sh` |
 | render  | `render()`  | the generated `render-*.sh` | `cut-<track>.mp4` |
+| export  | `export()`  | `export_timeline.py`   | `<track>.otio`, `<track>.fcpxml` |
+
+`render` and `export` are alternatives on the same arrangement: `render` bakes a
+finished mp4; `export` emits an editable timeline (OpenTimelineIO + FCP X XML)
+to hand the cut to DaVinci Resolve for finishing (color, audio, transitions,
+delivery). dv2mv decides the *cut*; Resolve *finishes* it.
 
 Each stage is a generator yielding `ProgressEvent(stage, message, frac, done,
 result)` and raises `StageError` on failure — no printing, no globals. Stages

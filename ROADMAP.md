@@ -5,25 +5,16 @@ the **bug tracker** (https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv), which
 is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
 ## Next
-- **Export an editable timeline → DaVinci Resolve** (see below) — now the
-  highest-value remaining feature.
-
-## Bigger features
-- **Export an editable timeline → DaVinci Resolve.** Instead of (or alongside)
-  the ffmpeg render, emit an interchange timeline so the cut can be finished in
-  Resolve (color, audio, transitions, delivery). dv2mv decides the *cut*; Resolve
-  *finishes*. New `export` stage reading the order-sync data: one video track of
-  the slot clips + one audio track (the music). NOTE: `.drp` is Resolve's
-  proprietary archive — no good writer; target **FCPXML / OTIO / EDL** that
-  Resolve imports (OpenTimelineIO is the maintained Python lib; or hand-emit
-  FCPXML to stay dep-light). Small prerequisite: record each slot's source
-  in-point in the arrange output (the `ss` offset the render script computes),
-  so the timeline trims are exact.
 - **Compare timing schemes by energy match.** Arrange a track across multiple
   grids (sections/downbeats/beats/harmonic) and show their energy-match % (and
   cuts/clips) side by side, so you can pick the scheme that best fits the
   track's energy. Builds on the per-grid variants + the `arrange.json`
   provenance already written per arrangement.
+
+## Bigger features
+- **Export polish.** The export stage ships (OTIO + FCPXML, below). Follow-ups
+  if Resolve import needs them: spatial/scale conform per clip, EDL as a third
+  format (OTIO's cmx3600 adapter), and a UI toggle for which formats to write.
 
 ## Later
 - **Incremental catalog** — "Add footage" should feature-extract only the *new*
@@ -45,4 +36,8 @@ arrange options + energy-match summary; IRIX/4Dwm Tk theme + SGI font; projects
 **cancellation** of a running stage in both tiers (a `threading.Event` token
 threaded through every stage; the engine terminates the subprocess process
 group so a render's `ffmpeg` child dies too — web has a job registry +
-`/api/cancel`, Tk has a Cancel button); MPL-2.0; on sr.ht.
+`/api/cancel`, Tk has a Cancel button);
+**editable-timeline export** to DaVinci Resolve (new `export` stage →
+OpenTimelineIO `.otio` + FCP X `.fcpxml`, one video track of the cut clips
+trimmed at the recorded source in-points + one audio track of the music; both
+UIs have an Export button); MPL-2.0; on sr.ht.
