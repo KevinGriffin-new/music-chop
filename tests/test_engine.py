@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Kevin Griffin
 """Per-stage tests for the dv2mv engine.
 
 Two tiers:

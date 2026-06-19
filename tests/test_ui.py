@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Kevin Griffin
 """Front-end tests: web upload endpoints + Tk picker wiring.
 
 The web tests use FastAPI's TestClient (no server, no network) and monkeypatch

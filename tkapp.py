@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Kevin Griffin
 """
 tkapp.py — STUB: the offline / browserless front end (Tkinter, classic look).
 

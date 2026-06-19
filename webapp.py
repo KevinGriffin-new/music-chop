@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Kevin Griffin
 """
 webapp.py — STUB: the fast, browser-based front end (web tier).
 

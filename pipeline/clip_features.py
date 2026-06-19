@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Kevin Griffin
 """
 clip_features.py — extract per-clip features from a pile of video clips.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Kevin Griffin
 """Shared fixtures for the dv2mv engine tests.
 
 The heavy stages (ingest/detect/catalog/analyze/render) shell out to real

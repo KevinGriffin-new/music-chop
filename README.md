@@ -86,3 +86,14 @@ DV2MV_MEDIA=/path/to/media DV2MV_PLAYER=VLC python3 tkapp.py   # macOS: open -a 
 ```bash
 python3 -m pytest tests        # ≈4 s; integration tests self-skip if a tool is missing
 ```
+
+## License
+
+[Mozilla Public License 2.0](LICENSE) (file-level copyleft — you can embed the
+engine in larger works, but changes to MPL-covered files stay open). Source
+files carry an `SPDX-License-Identifier: MPL-2.0` header.
+
+The vendored SGI screen font in `assets/fonts/` is a separate work under
+**CC0-1.0** (public domain) — see `assets/fonts/license.txt`. System tools it
+drives (ffmpeg, scenedetect) keep their own licenses; they're invoked as
+separate processes, not linked.
