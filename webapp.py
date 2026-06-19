@@ -381,6 +381,7 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <label>Drop blurry &lt; <input id=blur type=number value=0 min=0 step=1 style="width:5rem"></label>
 <label>Clip from
   <select id=clipfrom><option value=middle>middle</option><option value=start>start</option></select></label>
+<div id=gridhelp style="margin-top:.4rem;font-size:12px;color:#555"></div>
 </fieldset>
 
 <progress id=bar value=0 max=1 style="width:100%;display:block;margin:1rem 0"></progress>
@@ -437,9 +438,12 @@ function stream(url, stage, track){
 }
 
 const $ = id => document.getElementById(id);
+const GRID_HELP = /*GRIDHELP*/;
 
 function syncGrid(){           // beats/cut only matters on the beats grid
-  $('bpc').disabled = $('grid').value !== 'beats';
+  const g = $('grid').value;
+  $('bpc').disabled = g !== 'beats';
+  $('gridhelp').textContent = GRID_HELP[g] || '';
 }
 
 function arrangeQuery(){
@@ -554,4 +558,4 @@ async function uploadFootage(){
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return INDEX
+    return INDEX.replace("/*GRIDHELP*/", json.dumps(engine.GRID_HELP))

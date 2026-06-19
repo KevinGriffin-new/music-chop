@@ -62,6 +62,14 @@ SCRIPT = {
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv")
 
+# one-line help for each arrange grid (shared by both UIs so they stay in sync)
+GRID_HELP = {
+    "sections":  "one cut per song section — calmest, longest takes",
+    "downbeats": "one cut per bar — driving, lands on the beat",
+    "beats":     "one cut every N beats (beats-per-cut) — fast montage",
+    "harmonic":  "one cut at each chord / harmony change",
+}
+
 
 # ── progress / error model ─────────────────────────────────────────────────
 @dataclass

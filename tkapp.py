@@ -373,8 +373,9 @@ class ArrangeOptions(tk.Toplevel):
         gf = ttk.LabelFrame(self, text="Cut grid")
         gf.pack(fill="x", **pad)
         for g in GRIDS:
-            ttk.Radiobutton(gf, text=g, value=g, variable=self.v_grid,
-                            command=self._sync).pack(anchor="w", padx=8, pady=1)
+            ttk.Radiobutton(gf, text=f"{g} — {engine.GRID_HELP.get(g, '')}",
+                            value=g, variable=self.v_grid,
+                            command=self._sync).pack(anchor="w", fill="x", padx=8, pady=1)
 
         bf = ttk.Frame(self)
         bf.pack(fill="x", **pad)

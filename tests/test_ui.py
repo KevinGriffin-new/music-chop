@@ -323,6 +323,20 @@ def test_icons_vendored():
     assert os.path.exists(os.path.join(icons, "dv2mv-256.png"))
 
 
+def test_grid_help_covers_all_grids():
+    pytest.importorskip("tkinter")
+    import engine
+    import tkapp
+    assert set(tkapp.GRIDS) == set(engine.GRID_HELP)     # every grid has a note
+    assert all(engine.GRID_HELP.values())
+
+
+def test_web_index_injects_grid_help(client):
+    html = client.get("/").text
+    assert "id=gridhelp" in html and "one cut per song section" in html
+    assert "/*GRIDHELP*/" not in html and '"downbeats"' in html   # placeholder filled
+
+
 def test_web_hero_served_and_shown(client):
     r = client.get("/hero.jpg")
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
