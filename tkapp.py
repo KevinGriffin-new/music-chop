@@ -137,15 +137,40 @@ LIGHT = "#e0e0e0"
 FONT = ("Helvetica", 11)   # bitmap-ish; swap for "Fixed"/"Courier" if installed
 
 
+def player_command(path: str, player: str, system: str):
+    """Build the argv to open `path`, honoring a preferred `player`.
+
+    Set DV2MV_PLAYER to force a specific app (e.g. "VLC") instead of the OS
+    default — handy when the default handler for the file type isn't a player
+    (a tag editor, say). Returns None on Windows with no override (caller uses
+    os.startfile). Kept pure so it's testable without launching anything.
+      * macOS:   `open -a <player> <path>`  (player is an app name or path)
+      * others:  `<player> <path>`          (player is a command on PATH)
+    """
+    if system == "Darwin":
+        return ["open", "-a", player, path] if player else ["open", path]
+    if system == "Windows":
+        return [player, path] if player else None
+    return [player, path] if player else ["xdg-open", path]
+
+
 def open_in_player(path: str) -> None:
-    """Hand a file to the OS default player (the Tk preview substitute)."""
-    sysname = platform.system()
-    if sysname == "Darwin":
-        subprocess.Popen(["open", path])
-    elif sysname == "Windows":
-        os.startfile(path)  # type: ignore[attr-defined]
-    else:
-        subprocess.Popen(["xdg-open", path])
+    """Open a file in the preferred player (the Tk preview substitute).
+
+    Honors DV2MV_PLAYER; falls back to the OS default. On macOS, if the chosen
+    app can't open the file, retries with the plain OS default.
+    """
+    system = platform.system()
+    player = os.environ.get("DV2MV_PLAYER", "").strip()
+    cmd = player_command(path, player, system)
+    if cmd is None:
+        os.startfile(path)  # type: ignore[attr-defined]  # Windows default
+        return
+    proc = subprocess.Popen(cmd)
+    if system == "Darwin" and player:
+        # `open -a Foo` exits nonzero if the app is missing — fall back cleanly
+        if proc.wait() != 0:
+            subprocess.Popen(["open", path])
 
 
 class GalleryWindow(tk.Toplevel):

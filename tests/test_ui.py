@@ -212,6 +212,21 @@ def test_pick_irix_font_uses_sgi_font_else_falls_back():
     assert fb == (tkapp.IRIX_FONT_FALLBACK, tkapp.IRIX_FONT_SIZE)
 
 
+def test_player_command_honors_preferred_player():
+    pytest.importorskip("tkinter")
+    import tkapp
+    p = "/v/clips/a.mp4"
+    # macOS: default vs forced app
+    assert tkapp.player_command(p, "", "Darwin") == ["open", p]
+    assert tkapp.player_command(p, "VLC", "Darwin") == ["open", "-a", "VLC", p]
+    # linux: xdg-open vs explicit command
+    assert tkapp.player_command(p, "", "Linux") == ["xdg-open", p]
+    assert tkapp.player_command(p, "mpv", "Linux") == ["mpv", p]
+    # windows: None means caller uses os.startfile; override runs the app
+    assert tkapp.player_command(p, "", "Windows") is None
+    assert tkapp.player_command(p, "vlc.exe", "Windows") == ["vlc.exe", p]
+
+
 def test_irix_font_vendored_in_repo():
     # the CC0 font ships with the project so the look is reproducible
     fonts = os.path.join(REPO, "assets", "fonts")

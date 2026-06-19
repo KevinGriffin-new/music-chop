@@ -74,6 +74,13 @@ back to a mono family:
 cp assets/fonts/IrixScreenMono15*.ttf ~/Library/Fonts/    # macOS
 ```
 
+The Tk gallery opens a clicked clip in the OS default app. If that's not a
+player (e.g. a tag editor owns `.mp4`), force one with `DV2MV_PLAYER`:
+
+```bash
+DV2MV_MEDIA=/path/to/media DV2MV_PLAYER=VLC python3 tkapp.py   # macOS: open -a VLC
+```
+
 ## Test
 
 ```bash
