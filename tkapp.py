@@ -355,50 +355,44 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("dv2mv")
-        self.configure(bg=GREY)
+        apply_irix_theme(self)              # IRIX/4Dwm look for the ttk controls
+        self.configure(bg=IRIX["bg"])
         self.q: queue.Queue[engine.ProgressEvent] = queue.Queue()
         self._last_grid = None     # grid chosen in the options dialog; render reuses it
 
-        bevel = dict(bg=GREY, relief="raised", bd=2)
-        tk.Label(self, text="dv2mv — offline", bg=GREY, font=("Helvetica", 13, "bold"),
-                 relief="raised", bd=2, pady=4).pack(fill="x")
+        title_font = (IRIX_MENU_FONT[0], IRIX_MENU_FONT[1] + 2, "bold italic")
+        ttk.Label(self, text="dv2mv — offline", anchor="center", relief="raised",
+                  borderwidth=2, padding=4, font=title_font).pack(fill="x")
 
-        row = tk.Frame(self, **bevel)
+        row = ttk.Frame(self, padding=4)
         row.pack(fill="x", padx=6, pady=6)
-        tk.Label(row, text="Track:", bg=GREY, font=FONT).pack(side="left", padx=4)
-        self.track = tk.Entry(row, font=FONT, relief="sunken", bd=2, bg=LIGHT)
+        ttk.Label(row, text="Track:").pack(side="left", padx=4)
+        self.track = ttk.Entry(row)
         self.track.insert(0, "02 Erased.mp3")
-        self.track.pack(side="left", fill="x", expand=True, padx=4, pady=4)
+        self.track.pack(side="left", fill="x", expand=True, padx=4)
 
         # ── add new media via native file dialogs ──────────────────────────
-        src = tk.Frame(self, **bevel)
+        src = ttk.Frame(self, padding=4)
         src.pack(fill="x", padx=6, pady=(0, 6))
-        tk.Label(src, text="Add:", bg=GREY, font=FONT).pack(side="left", padx=4)
-        tk.Button(src, text="Music track…", font=FONT, bg=GREY, relief="raised",
-                  bd=2, activebackground=LIGHT, padx=8,
-                  command=self.add_track).pack(side="left", padx=4, pady=4)
-        tk.Button(src, text="Video footage…", font=FONT, bg=GREY, relief="raised",
-                  bd=2, activebackground=LIGHT, padx=8,
-                  command=self.add_footage).pack(side="left", padx=4, pady=4)
-        tk.Button(src, text="Gallery…", font=FONT, bg=GREY, relief="raised",
-                  bd=2, activebackground=LIGHT, padx=8,
-                  command=self.open_gallery).pack(side="right", padx=4, pady=4)
+        ttk.Label(src, text="Add:").pack(side="left", padx=4)
+        ttk.Button(src, text="Music track…", command=self.add_track).pack(side="left", padx=4)
+        ttk.Button(src, text="Video footage…", command=self.add_footage).pack(side="left", padx=4)
+        ttk.Button(src, text="Gallery…", command=self.open_gallery).pack(side="right", padx=4)
 
-        btns = tk.Frame(self, bg=GREY)
+        btns = ttk.Frame(self, padding=(6, 4))
         btns.pack(fill="x", padx=6)
         for label, stage in (("Analyze", "analyze"), ("Arrange", "arrange"),
                              ("Render", "render")):
-            tk.Button(btns, text=label, font=FONT, bg=GREY, relief="raised", bd=2,
-                      activebackground=LIGHT, padx=10,
-                      command=lambda s=stage: self.launch(s)).pack(side="left", padx=4, pady=6)
+            ttk.Button(btns, text=label,
+                       command=lambda s=stage: self.launch(s)).pack(side="left", padx=4)
 
-        self.status = tk.Label(self, text="ready", bg=DARK, fg="white", font=FONT,
-                               anchor="w", relief="sunken", bd=2)
+        self.status = tk.Label(self, text="ready", bg=IRIX["dark"], fg="white",
+                               font=IRIX_MENU_FONT, anchor="w", relief="sunken", bd=2)
         self.status.pack(fill="x", padx=6)
 
-        # classic drawn progress bar (no ttk): determinate fill when frac is
-        # known, an animated sweep while a stage runs so the UI never looks dead.
-        self.pb = tk.Canvas(self, height=16, bg=LIGHT, relief="sunken", bd=2,
+        # drawn progress bar (regular tk.Canvas, per request): determinate fill
+        # when frac is known, an animated sweep while a stage runs.
+        self.pb = tk.Canvas(self, height=16, bg=IRIX["field"], relief="sunken", bd=2,
                             highlightthickness=0)
         self.pb.pack(fill="x", padx=6, pady=(0, 6))
         self.active = 0          # number of running stages
