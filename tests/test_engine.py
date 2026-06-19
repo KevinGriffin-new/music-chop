@@ -213,12 +213,16 @@ def test_catalog_writes_manifest(clips_dir, tmp_path):
 @requires_ffmpeg
 def test_analyze_writes_json_and_merges(tiny_wav, tmp_path):
     out = str(tmp_path / "audio_out")
-    final = engine.run_stage(engine.analyze(tiny_wav, out, plot=False), lambda e: None)
+    evs = drain(engine.analyze(tiny_wav, out, plot=False))
+    final = evs[-1].result
     assert os.path.exists(final["analysis"])
     import json
     an = json.load(open(final["analysis"]))
     assert an["track"] == "synthsong" and an["duration_s"] > 0
     assert os.path.exists(os.path.join(out, "tracks_summary.csv"))
+    # real step progress (not just start + done) so the UI never looks frozen
+    mids = [e.frac for e in evs if e.frac is not None and not e.done]
+    assert any(0 < f < 1 for f in mids), f"no intermediate progress: {mids}"
 
 
 # ── integration: arrange (sync_clips, numpy only) ────────────────────────────
@@ -233,6 +237,24 @@ def test_arrange_builds_sidecars_with_tag(synth_analysis, smoke_manifest):
     assert isinstance(final["energy_match"], int)
     # render script is executable
     assert os.stat(final["render_sh"]).st_mode & stat.S_IXUSR
+
+
+def test_arrange_missing_analysis_prompts_analyze(tmp_path, smoke_manifest):
+    with pytest.raises(engine.StageError) as ei:
+        drain(engine.arrange(str(tmp_path / "Ghost.analysis.json"), smoke_manifest))
+    assert "Analyze" in str(ei.value)
+
+
+def test_arrange_missing_manifest_prompts_footage(synth_analysis, tmp_path):
+    with pytest.raises(engine.StageError) as ei:
+        drain(engine.arrange(synth_analysis, str(tmp_path / "no-manifest.csv")))
+    assert "footage" in str(ei.value)
+
+
+def test_render_missing_script_prompts_arrange(tmp_path):
+    with pytest.raises(engine.StageError) as ei:
+        drain(engine.render(str(tmp_path / "render-Ghost.sh")))
+    assert "Arrange" in str(ei.value)
 
 
 def test_arrange_different_grids_do_not_clobber(synth_analysis, smoke_manifest):

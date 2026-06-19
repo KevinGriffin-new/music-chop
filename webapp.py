@@ -67,12 +67,26 @@ def _save_upload(upload: UploadFile, dest_dir: str, allowed: tuple) -> str:
 
 
 def _sse(stage_gen) -> StreamingResponse:
-    """Adapter: turn a stage generator into an SSE stream of JSON events."""
+    """Adapter: turn a stage generator into an SSE stream of JSON events.
+
+    A StageError (e.g. a missing prerequisite) is turned into a final `error`
+    event so the browser can show an actionable message instead of the stream
+    just dying. Any other exception is reported the same way.
+    """
     def event_source():
-        for ev in stage_gen:
-            payload = {"stage": ev.stage, "message": ev.message,
-                       "frac": ev.frac, "done": ev.done, "result": ev.result}
-            yield f"data: {json.dumps(payload)}\n\n"
+        try:
+            for ev in stage_gen:
+                payload = {"stage": ev.stage, "message": ev.message,
+                           "frac": ev.frac, "done": ev.done, "result": ev.result}
+                yield f"data: {json.dumps(payload)}\n\n"
+        except engine.StageError as exc:
+            yield ("data: " + json.dumps(
+                {"stage": "error", "message": str(exc), "frac": None,
+                 "done": True, "error": True}) + "\n\n")
+        except Exception as exc:  # last-resort: never leave the UI hanging
+            yield ("data: " + json.dumps(
+                {"stage": "error", "message": f"unexpected: {exc}", "frac": None,
+                 "done": True, "error": True}) + "\n\n")
     return StreamingResponse(event_source(), media_type="text/event-stream")
 
 
@@ -195,22 +209,34 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <video id=vid controls style="width:100%;display:none"></video>
 <script>
 const log = m => document.getElementById('log').textContent += m + "\\n";
+const bar = () => document.getElementById('bar');
+const busy = () => bar().removeAttribute('value');   // <progress> animates when value-less
+const determinate = f => bar().value = f;
+const idle = () => bar().value = 0;
 
 function stream(url, stage, track){
+  busy();                       // show motion immediately so it never looks frozen
   const es = new EventSource(url);
   es.onmessage = e => {
     const ev = JSON.parse(e.data);
-    if (ev.frac != null) document.getElementById('bar').value = ev.frac;
+    if (ev.error){
+      log('⚠ ' + ev.message);
+      if (/run Analyze/i.test(ev.message)) log('   → click "Analyze" first.');
+      else if (/add footage/i.test(ev.message)) log('   → upload footage first.');
+      else if (/run Arrange/i.test(ev.message)) log('   → click "Arrange" first.');
+      es.close(); idle(); return;
+    }
+    if (ev.frac != null) determinate(ev.frac); else busy();
     log(`[${ev.stage}] ${ev.message}`);
     if (ev.done){
-      es.close();
+      es.close(); idle();
       if (stage === 'render'){
         const v = document.getElementById('vid');
         v.src = `/api/video?track=${track}`; v.style.display = 'block';
       }
     }
   };
-  es.onerror = () => { log('-- stream error --'); es.close(); };
+  es.onerror = () => { log('-- stream error --'); es.close(); idle(); };
 }
 
 function go(stage){

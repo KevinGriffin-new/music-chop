@@ -129,3 +129,27 @@ def test_clip_endpoint_blocks_paths_outside_media(client):
 def test_clip_endpoint_404_for_missing_inside_media(client):
     r = client.get("/api/clip", params={"path": os.path.join(webapp.MEDIA, "nope.mp4")})
     assert r.status_code == 404
+
+
+# ── progress liveness + actionable prompts ───────────────────────────────────
+def test_arrange_missing_prereq_streams_error_event(client, tmp_path, monkeypatch):
+    """A missing analysis must arrive as a clean SSE error event (not a dead
+    stream), carrying the 'run Analyze' prompt for the UI to surface."""
+    monkeypatch.setattr(webapp, "CATALOG_AUDIO", str(tmp_path / "catalog_audio"))
+    monkeypatch.setattr(webapp, "MANIFEST", str(tmp_path / "manifest.csv"))
+    body = client.get("/api/arrange", params={"track": "Ghostsong.mp3"}).text
+    assert '"error": true' in body or '"error":true' in body
+    assert "Analyze" in body
+
+
+def test_index_has_indeterminate_and_error_handling(client):
+    html = client.get("/").text
+    assert "removeAttribute('value')" in html      # indeterminate <progress>
+    assert "ev.error" in html                        # error events are handled
+
+
+def test_tkapp_has_progress_and_prompt_machinery():
+    pytest.importorskip("tkinter")
+    import tkapp
+    for attr in ("_pb_tick", "_begin", "_end"):
+        assert hasattr(tkapp.App, attr), attr

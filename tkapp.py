@@ -34,7 +34,7 @@ import queue
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 import engine
 
@@ -101,11 +101,47 @@ class App(tk.Tk):
         self.status = tk.Label(self, text="ready", bg=DARK, fg="white", font=FONT,
                                anchor="w", relief="sunken", bd=2)
         self.status.pack(fill="x", padx=6)
+
+        # classic drawn progress bar (no ttk): determinate fill when frac is
+        # known, an animated sweep while a stage runs so the UI never looks dead.
+        self.pb = tk.Canvas(self, height=16, bg=LIGHT, relief="sunken", bd=2,
+                            highlightthickness=0)
+        self.pb.pack(fill="x", padx=6, pady=(0, 6))
+        self.active = 0          # number of running stages
+        self._pb_frac = None     # last known fraction (None => indeterminate)
+        self._pb_pos = 0         # sweep position for the indeterminate animation
+
         self.log = tk.Text(self, height=10, font=("Courier", 10), bg="black",
                            fg="#33ff33", relief="sunken", bd=2)   # green-on-black, naturally
         self.log.pack(fill="both", expand=True, padx=6, pady=6)
 
         self.after(100, self._drain)
+        self.after(60, self._pb_tick)
+
+    # ── progress bar (drawn on a Canvas; classic look, always moving) ───────
+    def _begin(self) -> None:
+        self.active += 1
+        self._pb_frac = None
+
+    def _end(self) -> None:
+        self.active = max(0, self.active - 1)
+        if self.active == 0:
+            self._pb_frac = None
+
+    def _pb_tick(self) -> None:
+        self.pb.delete("fill")
+        w = self.pb.winfo_width()
+        h = int(self.pb["height"])
+        if self.active and self._pb_frac is not None:                 # determinate
+            self.pb.create_rectangle(0, 0, int(w * self._pb_frac), h,
+                                     fill="#5b9dff", width=0, tags="fill")
+        elif self.active:                                             # indeterminate sweep
+            cw = max(40, int(w * 0.22))
+            x = (self._pb_pos % (w + cw)) - cw
+            self.pb.create_rectangle(x, 0, x + cw, h, fill="#5b9dff",
+                                     width=0, tags="fill")
+            self._pb_pos += max(6, int(w * 0.02))
+        self.after(60, self._pb_tick)
 
     # ── run any stage generator on a worker thread, funnel into the queue ───
     def _spawn(self, make_gen) -> None:
@@ -113,12 +149,17 @@ class App(tk.Tk):
 
         All UI feedback flows through self.q; never touch widgets from here.
         """
+        self._begin()
         def work():
             try:
                 for ev in make_gen():
                     self.q.put(ev)
             except engine.StageError as exc:
                 self.q.put(engine.ProgressEvent("error", f"FAILED: {exc}", done=True))
+            finally:
+                # one sentinel per spawn ends the bar, even for multi-stage
+                # chains (footage = detect THEN catalog, two done events).
+                self.q.put(engine.ProgressEvent("__end__", "", done=True))
         threading.Thread(target=work, daemon=True).start()
 
     # ── kick a stage off from the Track box ─────────────────────────────────
@@ -173,11 +214,20 @@ class App(tk.Tk):
         try:
             while True:
                 ev = self.q.get_nowait()
+                if ev.stage == "__end__":
+                    self._end()                          # spawn finished → stop the bar
+                    continue
+                if ev.frac is not None:
+                    self._pb_frac = ev.frac              # feed the determinate bar
                 pct = "" if ev.frac is None else f"{ev.frac*100:3.0f}% "
                 self.status.config(text=f"{pct}{ev.message}")
                 self.log.insert("end", f"[{ev.stage}] {ev.message}\n")
                 self.log.see("end")
-                if ev.done and ev.result.get("video"):
+                if ev.stage == "error":
+                    # the actionable prompt the user asked for (e.g. run Analyze)
+                    messagebox.showwarning("dv2mv — can't continue",
+                                           ev.message.replace("FAILED: ", ""))
+                elif ev.done and ev.result.get("video"):
                     open_in_player(ev.result["video"])   # the Tk preview substitute
         except queue.Empty:
             pass

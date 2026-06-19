@@ -106,28 +106,42 @@ def downsample_env(rms, times, hz):
     return [round(t, 3) for t in grid], [round(float(v), 4) for v in vals]
 
 
+def _step(i, n, msg):
+    # progress marker parsed by engine.analyze() (regex: "PROG i/n msg").
+    # librosa stages are long and silent, so without these the UI looks frozen.
+    print(f"PROG {i}/{n} {msg}", flush=True)
+
+
 def analyze(path, sr_target, want_plot, out_dir):
     import librosa
+    N = 7
+    _step(1, N, "loading audio")
     y, sr = librosa.load(path, sr=sr_target, mono=True)
     hop = 512
     duration = float(librosa.get_duration(y=y, sr=sr))
 
+    _step(2, N, "tempo & beat tracking")
     tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop)
     tempo = float(np.atleast_1d(tempo)[0])
     beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop)
 
+    _step(3, N, "downbeats")
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
     bf = np.clip(beat_frames, 0, len(onset_env) - 1)
     beat_strength = onset_env[bf] if len(bf) else np.array([])
     downbeats = find_downbeats(beat_times, beat_strength, meter=4)
 
+    _step(4, N, "key estimation")
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop)
     key = estimate_key(chroma)
 
+    _step(5, N, "section boundaries")
     k = int(round(duration / 18)) + 1  # ~ a section every 18s
     secs = sections(y, sr, hop, k)
+    _step(6, N, "harmonic changes")
     hchanges = harmonic_changes(y, sr, hop)
 
+    _step(7, N, "energy envelope")
     rms = librosa.feature.rms(y=y, hop_length=hop)[0]
     rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
     env_t, env_v = downsample_env(rms, rms_times, hz=4)

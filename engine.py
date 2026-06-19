@@ -101,6 +101,7 @@ def _stream(cmd: list[str], cwd: str) -> Iterator[str]:
 
 _IOFN = re.compile(r"\[(\d+)/(\d+)\]")        # "[3/12] name" -> 3,12
 _MATCH = re.compile(r"energy match:\s*~?(\d+)%")
+_PROG = re.compile(r"PROG (\d+)/(\d+)\s*(.*)")  # "PROG 2/7 beats" -> 2,7,"beats"
 
 
 def _require(stage: str, paths: dict, tail: Optional[list[str]] = None) -> dict:
@@ -366,6 +367,11 @@ def analyze(
     for line in _stream(cmd, cwd=MEDIA):
         last = line or last
         tail = (tail + [line])[-25:]
+        # track_analyze emits "PROG i/n message" per step → a real moving bar
+        m = _PROG.search(line)
+        if m:
+            i, n = int(m.group(1)), int(m.group(2))
+            yield ProgressEvent(st, m.group(3).strip() or line, i / n)
 
     # track_analyze swallows per-track exceptions and still exits 0, so a
     # missing JSON here is a real failure — fail loud with the captured tail.
@@ -406,6 +412,15 @@ def arrange(
     """
     st = "arrange"
     track = os.path.splitext(os.path.basename(analysis_json))[0].replace(".analysis", "")
+    # Prerequisites must exist, else the UI sees a cryptic "can't open file".
+    # Surface an actionable prompt instead — these flow to both front ends.
+    if not os.path.exists(analysis_json):
+        raise StageError(
+            f"No analysis for '{track}' yet — run Analyze on the track first.")
+    if not os.path.exists(manifest):
+        raise StageError(
+            "No clip catalog yet — add footage (Upload + analyze footage) to "
+            "build the manifest before arranging.")
     if tag is None:
         tag = grid
     cmd = [sys.executable, SCRIPT["sync"], "--analysis", analysis_json,
@@ -439,12 +454,14 @@ def render(render_sh: str) -> Iterator[ProgressEvent]:
     """Execute the render-<track>.sh produced by arrange() → cut-<track>.mp4.
 
     The script re-encodes every segment then concats + muxes the audio, so this
-    is the long pole. We stream its lines; segment count isn't reported, so the
-    bar is indeterminate. (TODO(claude-code): for a real progress bar, count
-    rows in the order-sync csv and watch the temp dir, or pass -progress to the
-    final ffmpeg and parse out_time_ms against the track duration.)
+    is the long pole. arrange() writes "[seg/total]" markers into the script, so
+    render reports a real fractional bar as segments complete.
     """
     st = "render"
+    if not os.path.exists(render_sh):
+        raise StageError(
+            "No render script yet — run Arrange on the track first "
+            f"(missing {os.path.basename(render_sh)}).")
     cwd = os.path.dirname(os.path.abspath(render_sh))
     track = os.path.basename(render_sh).replace("render-", "").replace(".sh", "")
     video = os.path.join(cwd, f"cut-{track}.mp4")
