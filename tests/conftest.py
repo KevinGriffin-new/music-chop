@@ -121,3 +121,26 @@ def smoke_manifest():
     if not os.path.exists(p):
         pytest.skip("_smoke/catalog/manifest.csv missing")
     return p
+
+
+@pytest.fixture(scope="session")
+def app():
+    """One shared dv2mv Tk root for the whole session.
+
+    Creating/destroying multiple tk.Tk() roots in a single process aborts the
+    interpreter on macOS, so every Tk test reuses this one App (the main window,
+    which is itself the root) and only makes/destroys Toplevels off it.
+    """
+    pytest.importorskip("tkinter")
+    import tkinter as tk
+    import tkapp
+    try:
+        a = tkapp.App()
+        a.withdraw()
+    except tk.TclError:
+        pytest.skip("no display")
+    yield a
+    try:
+        a.destroy()
+    except Exception:
+        pass

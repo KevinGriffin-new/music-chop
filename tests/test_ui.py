@@ -192,15 +192,8 @@ def test_tk_project_wiring_present():
         assert hasattr(tkapp.App, attr), attr
 
 
-def test_tk_set_project_updates_label(tmp_path):
-    pytest.importorskip("tkinter")
-    import tkinter as tk
-    import tkapp
+def test_tk_set_project_updates_label(app, tmp_path):
     import engine
-    try:
-        app = tkapp.App(); app.withdraw()
-    except tk.TclError:
-        pytest.skip("no display")
     try:
         p = engine.Project(name="Demo", track="X.mp3", clips="all", dir=str(tmp_path))
         app._set_project(p)
@@ -209,46 +202,90 @@ def test_tk_set_project_updates_label(tmp_path):
         app._set_project(None)
         assert "library mode" in app.proj_label.cget("text")
     finally:
-        app.destroy()
+        app._set_project(None)                # leave shared app in a clean state
 
 
-def test_tk_new_project_dialog_builds(tmp_path):
-    pytest.importorskip("tkinter")
-    import tkinter as tk
+def test_tk_new_project_dialog_builds(app, tmp_path):
     import tkapp
+    captured = {}
+    dlg = tkapp.NewProjectDialog(
+        app, str(tmp_path), "02 Erased.mp3",
+        on_ok=lambda n, t, c: captured.update(name=n, track=t, clips=c))
     try:
-        root = tk.Tk(); root.withdraw()
-    except tk.TclError:
-        pytest.skip("no display")
-    try:
-        captured = {}
-        dlg = tkapp.NewProjectDialog(
-            root, str(tmp_path), "02 Erased.mp3",
-            on_ok=lambda n, t, c: captured.update(name=n, track=t, clips=c))
-        root.update_idletasks()
+        app.update_idletasks()
         assert dlg.clips() == "all"           # default scope = whole library
         dlg.v_name.set("My Project")
         dlg._ok()
         assert captured == {"name": "My Project", "track": "02 Erased.mp3", "clips": "all"}
     finally:
-        root.destroy()
+        if dlg.winfo_exists():
+            dlg.destroy()
 
 
-def test_tk_gallery_selection_and_apply(smoke_manifest):
-    pytest.importorskip("tkinter")
+# ── web projects ─────────────────────────────────────────────────────────────
+@pytest.fixture
+def proj_client(tmp_path, monkeypatch, smoke_manifest):
+    """A TestClient over a tmp media tree with an analysis + library manifest."""
+    import shutil
+    media = tmp_path / "media"
+    (media / "catalog_audio").mkdir(parents=True)
+    (media / "catalog").mkdir()
+    write_analysis(str(media / "catalog_audio"), "/tmp/Song.mp3", track="Song")
+    shutil.copy(smoke_manifest, media / "catalog" / "manifest.csv")
+    monkeypatch.setattr(webapp, "MEDIA", str(media))
+    monkeypatch.setattr(webapp, "MANIFEST", str(media / "catalog" / "manifest.csv"))
+    monkeypatch.setattr(webapp, "CATALOG_AUDIO", str(media / "catalog_audio"))
+    return TestClient(webapp.app), str(media)
+
+
+def test_web_sources_lists_tapes(proj_client):
+    client, _ = proj_client
+    src = client.get("/api/sources").json()["sources"]
+    assert src and all(isinstance(v, int) for v in src.values())
+
+
+def test_web_create_and_list_projects(proj_client):
+    client, _ = proj_client
+    r = client.post("/api/projects", data={"name": "Web Cut", "track": "Song.mp3"})
+    assert r.status_code == 200 and r.json()["clips"] == "all"
+    names = [p["name"] for p in client.get("/api/projects").json()["projects"]]
+    assert "Web Cut" in names
+
+
+def test_web_create_project_scoped_by_source(proj_client):
+    client, _ = proj_client
+    one = next(iter(client.get("/api/sources").json()["sources"]))
+    r = client.post("/api/projects",
+                    data={"name": "Scoped", "track": "Song.mp3", "sources": [one]})
+    assert r.status_code == 200 and isinstance(r.json()["clips"], int) and r.json()["clips"] > 0
+
+
+def test_web_arrange_within_project(proj_client):
+    client, media = proj_client
+    client.post("/api/projects", data={"name": "P", "track": "Song.mp3"})
+    body = client.get("/api/arrange", params={"project": "P", "grid": "sections"}).text
+    done = [ln for ln in body.splitlines() if '"done": true' in ln][-1]
+    import json
+    ev = json.loads(done.split("data: ", 1)[1])
+    assert ev["result"]["summary"]["grid"] == "sections"
+    # outputs landed in the project's own folder
+    assert os.path.exists(os.path.join(media, "projects", "P", "render-Song.sh"))
+
+
+def test_web_index_has_project_controls(client):
+    html = client.get("/").text
+    assert "id=project" in html and "id=psources" in html and "createProject" in html
+
+
+def test_tk_gallery_selection_and_apply(app, smoke_manifest):
     pytest.importorskip("PIL")
-    import tkinter as tk
     import tkapp
+    applied = {}
+    g = tkapp.GalleryWindow(app, smoke_manifest,
+                            on_apply=lambda c: applied.update(clips=c))
     try:
-        root = tk.Tk(); root.withdraw()
-    except tk.TclError:
-        pytest.skip("no display")
-    try:
-        applied = {}
-        g = tkapp.GalleryWindow(root, smoke_manifest,
-                                on_apply=lambda c: applied.update(clips=c))
         for _ in range(80):                 # pump the chunked loader to completion
-            root.update()
+            app.update()
             if not g._queue:
                 break
         assert g._cells, "no thumbnails loaded"
@@ -264,27 +301,22 @@ def test_tk_gallery_selection_and_apply(smoke_manifest):
         assert g.selected == set()
         for c in picks:
             g.toggle(c)
-        g._apply()                          # on_apply gets the sorted selection
+        g._apply()                          # on_apply gets the sorted selection (destroys g)
         assert applied["clips"] == sorted(picks)
     finally:
-        root.destroy()
+        if g.winfo_exists():
+            g.destroy()
 
 
-def test_tk_new_project_dialog_preset_clips(tmp_path):
-    pytest.importorskip("tkinter")
-    import tkinter as tk
+def test_tk_new_project_dialog_preset_clips(app, tmp_path):
     import tkapp
+    captured = {}
+    dlg = tkapp.NewProjectDialog(
+        app, str(tmp_path), "Song.mp3",
+        on_ok=lambda n, t, c: captured.update(name=n, track=t, clips=c),
+        clips=["/a.mp4", "/b.mp4"])
     try:
-        root = tk.Tk(); root.withdraw()
-    except tk.TclError:
-        pytest.skip("no display")
-    try:
-        captured = {}
-        dlg = tkapp.NewProjectDialog(
-            root, str(tmp_path), "Song.mp3",
-            on_ok=lambda n, t, c: captured.update(name=n, track=t, clips=c),
-            clips=["/a.mp4", "/b.mp4"])
-        root.update_idletasks()
+        app.update_idletasks()
         # a preset selection defaults to the 'selected' scope and returns as-is
         assert dlg.clips() == ["/a.mp4", "/b.mp4"]
         dlg.v_name.set("Gallery Cut")
@@ -292,7 +324,8 @@ def test_tk_new_project_dialog_preset_clips(tmp_path):
         assert captured == {"name": "Gallery Cut", "track": "Song.mp3",
                             "clips": ["/a.mp4", "/b.mp4"]}
     finally:
-        root.destroy()
+        if dlg.winfo_exists():
+            dlg.destroy()
 
 
 def test_tk_arrange_options_present():

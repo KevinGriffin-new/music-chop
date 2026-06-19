@@ -28,7 +28,7 @@ import sys
 from typing import List
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -162,9 +162,16 @@ def api_analyze(track: str):
 
 
 @app.get("/api/arrange")
-def api_arrange(track: str, grid: str = "sections", beats_per_cut: int = 4,
+def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
                 allow_reuse: bool = False, drop_blurry: float = 0.0,
-                clip_from: str = "middle"):
+                clip_from: str = "middle", project: str = ""):
+    if project:
+        # arrange within the project: save the chosen options, scope to its clips
+        p = engine.load_project(MEDIA, project)
+        (p.grid, p.beats_per_cut, p.allow_reuse, p.drop_blurry, p.clip_from) = (
+            grid, beats_per_cut, allow_reuse, drop_blurry, clip_from)
+        p.save()
+        return _sse(engine.arrange_project(p, MEDIA))
     analysis = os.path.join(CATALOG_AUDIO,
                             f"{os.path.splitext(track)[0]}.analysis.json")
     return _sse(engine.arrange(analysis, MANIFEST, grid=grid,
@@ -173,9 +180,11 @@ def api_arrange(track: str, grid: str = "sections", beats_per_cut: int = 4,
 
 
 @app.get("/api/render")
-def api_render(track: str, grid: str = ""):
-    # prefer the script for the chosen grid (render that specific arrangement);
-    # else fall back to the newest render-<track>-*.sh.
+def api_render(track: str = "", grid: str = "", project: str = ""):
+    if project:
+        return _sse(engine.render_project(engine.load_project(MEDIA, project)))
+    # library mode: prefer the script for the chosen grid (render that specific
+    # arrangement); else fall back to the newest render-<track>-*.sh.
     sh = None
     if grid:
         stem = os.path.splitext(os.path.basename(track))[0]
@@ -190,6 +199,40 @@ def api_render(track: str, grid: str = ""):
             yield  # noqa: unreachable — makes this a generator for _sse
         return _sse(need_arrange())
     return _sse(engine.render(sh))
+
+
+# ── projects (mirror the Tk project flow on the shared engine model) ─────────
+@app.get("/api/projects")
+def api_projects():
+    """List projects with their track + clip-scope, for the picker."""
+    out = []
+    for name in engine.list_projects(MEDIA):
+        p = engine.load_project(MEDIA, name)
+        out.append({"name": p.name, "track": p.track,
+                    "clips": (len(p.clips) if isinstance(p.clips, list) else "all")})
+    return {"projects": out}
+
+
+@app.get("/api/sources")
+def api_sources():
+    """source/tape -> clip count, for the New Project footage picker."""
+    return {"sources": {k: len(v) for k, v in engine.manifest_sources(MANIFEST).items()}}
+
+
+@app.post("/api/projects")
+def api_create_project(name: str = Form(...), track: str = Form(...),
+                       sources: List[str] = Form(default=[])):
+    """Create a project. No sources selected => whole library; else those tapes."""
+    if not name.strip():
+        raise HTTPException(400, "project name required")
+    clips = "all"
+    if sources:
+        srcmap = engine.manifest_sources(MANIFEST)
+        picked = [c for s in sources for c in srcmap.get(s, [])]
+        clips = picked or "all"
+    p = engine.new_project(MEDIA, name.strip(), track.strip(), clips=clips)
+    return {"name": p.name, "track": p.track,
+            "clips": (len(p.clips) if isinstance(p.clips, list) else "all")}
 
 # The finished cut lives under CATALOG_AUDIO (inside MEDIA); the page plays it
 # via /api/clip using the absolute path from render's result, so there's no
@@ -213,6 +256,20 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 </div>
 <div style="margin:.3rem 0">
   <a href="/api/gallery" target="_blank"><button type=button>View catalog gallery ↗</button></a>
+</div>
+</fieldset>
+
+<fieldset style="margin-bottom:1rem">
+<legend>Project</legend>
+<div style="margin:.3rem 0">
+  Active: <select id=project onchange="selectProject()">
+    <option value="">— library mode —</option></select>
+</div>
+<div style="margin:.3rem 0">
+  <input id=pname placeholder="new project name" size=20>
+  footage: <select id=psources multiple size=4 style="vertical-align:top;min-width:13rem"></select>
+  <button type=button onclick="createProject()">Create</button>
+  <div style="font-size:11px;color:#666">pick tapes to scope the project, or select none for the whole library</div>
 </div>
 </fieldset>
 
@@ -304,14 +361,69 @@ function arrangeQuery(){
        + `&clip_from=${$('clipfrom').value}`;
 }
 
+let activeProject = "";
+let projectTracks = {};
+
+async function loadProjects(){
+  const sel = $('project'), cur = sel.value;
+  const j = await (await fetch('/api/projects')).json();
+  sel.innerHTML = '<option value="">— library mode —</option>';
+  projectTracks = {};
+  for (const p of j.projects){
+    projectTracks[p.name] = p.track;
+    const o = document.createElement('option');
+    o.value = p.name; o.textContent = `${p.name} (${p.clips} clips · ${p.track})`;
+    sel.appendChild(o);
+  }
+  sel.value = cur;
+}
+
+async function loadSources(){
+  const j = await (await fetch('/api/sources')).json();
+  const sel = $('psources'); sel.innerHTML = '';
+  for (const [s, n] of Object.entries(j.sources)){
+    const o = document.createElement('option');
+    o.value = s; o.textContent = `${s} (${n})`;
+    sel.appendChild(o);
+  }
+}
+
+function selectProject(){
+  activeProject = $('project').value;
+  if (activeProject){
+    $('track').value = projectTracks[activeProject] || $('track').value;
+    log('● project: ' + activeProject);
+  } else { log('● library mode'); }
+}
+
+async function createProject(){
+  const name = $('pname').value.trim();
+  if (!name){ log('enter a project name first'); return; }
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('track', $('track').value);
+  for (const o of $('psources').selectedOptions) fd.append('sources', o.value);
+  const r = await fetch('/api/projects', {method:'POST', body:fd});
+  if (!r.ok){ log('create failed: ' + (await r.text())); return; }
+  const p = await r.json();
+  log(`created project '${p.name}' (${p.clips} clips)`);
+  await loadProjects();
+  $('project').value = p.name; selectProject();
+  $('pname').value = '';
+}
+
 function go(stage){
   const track = encodeURIComponent($('track').value);
   let url = `/api/${stage}?track=${track}`;
   if (stage === 'arrange') url += arrangeQuery();
   if (stage === 'render')  url += `&grid=${$('grid').value}`;  // render the chosen grid
+  if (activeProject && (stage === 'arrange' || stage === 'render'))
+    url += `&project=${encodeURIComponent(activeProject)}`;   // scope to the project
   stream(url, stage, track);
 }
 syncGrid();
+loadProjects();
+loadSources();
 
 async function uploadTrack(){
   const f = document.getElementById('trackfile').files[0];
