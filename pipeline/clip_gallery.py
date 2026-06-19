@@ -20,14 +20,15 @@ import os
 import webbrowser
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Build an HTML clip gallery.")
-    ap.add_argument("manifest", help="path to catalog/manifest.csv")
-    ap.add_argument("--open", action="store_true", help="open in browser when done")
-    args = ap.parse_args()
+def build_gallery_data(manifest_path):
+    """Read manifest.csv (+ order.csv if present) into the gallery row list.
 
-    cat = os.path.dirname(os.path.abspath(args.manifest))
-    with open(args.manifest, newline="") as fh:
+    Reusable by both the CLI and the web tier so the HTML isn't forked. `clip`
+    is a file:// URL and `thumb` is the manifest-relative path; the web layer
+    rewrites those to served URLs before rendering.
+    """
+    cat = os.path.dirname(os.path.abspath(manifest_path))
+    with open(manifest_path, newline="") as fh:
         rows = list(csv.DictReader(fh))
 
     # merge order.csv if present (adds position + cluster)
@@ -58,9 +59,28 @@ def main():
             "pos": pos_by_clip.get(key, ""),
             "cluster": cluster_by_clip.get(key, ""),
         })
+    return data
 
-    html = _TEMPLATE.replace("/*DATA*/", json.dumps(data))
-    out = os.path.join(cat, "gallery.html")
+
+def render_from_data(data):
+    """Inject a gallery row list into the HTML template -> full page string."""
+    return _TEMPLATE.replace("/*DATA*/", json.dumps(data))
+
+
+def render_gallery(manifest_path):
+    """Convenience: manifest path -> rendered HTML string."""
+    return render_from_data(build_gallery_data(manifest_path))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Build an HTML clip gallery.")
+    ap.add_argument("manifest", help="path to catalog/manifest.csv")
+    ap.add_argument("--open", action="store_true", help="open in browser when done")
+    args = ap.parse_args()
+
+    data = build_gallery_data(args.manifest)
+    html = render_from_data(data)
+    out = os.path.join(os.path.dirname(os.path.abspath(args.manifest)), "gallery.html")
     with open(out, "w") as fh:
         fh.write(html)
     print(f"Wrote {out} ({len(data)} clips)")

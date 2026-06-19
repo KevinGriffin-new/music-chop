@@ -8,11 +8,12 @@ ProgressEvents to the browser over Server-Sent Events (SSE). The browser shows a
 progress bar from `frac`, then drops the finished cut into a <video> element —
 the inline-preview win that makes the web tier worth building first.
 
-This is a skeleton: enough to upload media, run analyze→arrange→render, and
-preview the result. Uploading a track saves it to album-audio/; uploading
-footage saves to sources/ then scene-splits + catalogs it. Still to flesh out:
-job ids / a job registry, the gallery view (reuse clip_gallery.html), parameter
-forms for the grid/reuse knobs, and richer error surfacing.
+This is a skeleton: enough to upload media, run analyze→arrange→render, browse
+the catalog gallery, and preview the result. Uploading a track saves it to
+album-audio/; uploading footage saves to sources/ then scene-splits + catalogs
+it; /api/gallery reuses clip_gallery.py's HTML. Still to flesh out: job ids / a
+job registry, parameter forms for the grid/reuse knobs, and richer error
+surfacing.
 
 Run:  uvicorn webapp:app --reload      (pip install fastapi uvicorn python-multipart)
 """
@@ -21,22 +22,34 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from typing import List
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 import engine
+
+# make the vendored pipeline importable regardless of the launch cwd
+if engine.HERE not in sys.path:
+    sys.path.insert(0, engine.HERE)
+from pipeline import clip_gallery   # noqa: E402  (reuse its HTML, don't fork it)
 
 app = FastAPI(title="dv2mv (web)")
 
 MEDIA = engine.MEDIA          # media root (set DV2MV_MEDIA); not the code repo
 CATALOG_AUDIO = os.path.join(MEDIA, "catalog_audio")
-MANIFEST = os.path.join(MEDIA, "catalog", "manifest.csv")
+CATALOG = os.path.join(MEDIA, "catalog")
+MANIFEST = os.path.join(CATALOG, "manifest.csv")
 ALBUM_AUDIO = os.path.join(MEDIA, "album-audio")
 SOURCES = os.path.join(MEDIA, "sources")        # uploaded footage lands here
 CLIPS = os.path.join(MEDIA, "clips")
-CATALOG = os.path.join(MEDIA, "catalog")
+
+# serve the catalog dir so the gallery's thumbs/ load over http
+os.makedirs(CATALOG, exist_ok=True)
+app.mount("/catalog-files", StaticFiles(directory=CATALOG), name="catalog")
 
 
 def _save_upload(upload: UploadFile, dest_dir: str, allowed: tuple) -> str:
@@ -90,6 +103,41 @@ def api_footage():
     return _sse(chain())
 
 
+# ── catalog gallery (reuses clip_gallery.py's HTML) ─────────────────────────
+@app.get("/api/gallery", response_class=HTMLResponse)
+def api_gallery():
+    """The clip contact sheet for the current catalog, served over http.
+
+    Reuses clip_gallery's data builder + template, then rewrites the local
+    file:// thumb/clip references to served URLs so they work in a browser.
+    """
+    if not os.path.exists(MANIFEST):
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8>"
+            "<body style='font:14px system-ui;margin:2rem'>"
+            "<p>No catalog yet — upload footage first, then reload.</p>")
+    data = clip_gallery.build_gallery_data(MANIFEST)
+    for d in data:
+        if d.get("thumb"):
+            d["thumb"] = "/catalog-files/" + d["thumb"].lstrip("/")
+        # file:// can't be opened from an http page; route through /api/clip
+        if d.get("clip", "").startswith("file://"):
+            d["clip"] = "/api/clip?path=" + quote(d["clip"][len("file://"):])
+    return HTMLResponse(clip_gallery.render_from_data(data))
+
+
+@app.get("/api/clip")
+def api_clip(path: str):
+    """Serve a clip by absolute path, but only if it's inside the media root."""
+    real = os.path.realpath(path)
+    root = os.path.realpath(MEDIA)
+    if real != root and not real.startswith(root + os.sep):
+        raise HTTPException(403, "outside media root")
+    if not os.path.isfile(real):
+        raise HTTPException(404, "not found")
+    return FileResponse(real)
+
+
 # ── stage endpoints (each streams progress) ────────────────────────────────
 @app.get("/api/analyze")
 def api_analyze(track: str):
@@ -132,6 +180,9 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <div style="margin:.3rem 0">
   <input type=file id=footagefiles accept="video/*" multiple>
   <button onclick="uploadFootage()">Upload + analyze footage</button>
+</div>
+<div style="margin:.3rem 0">
+  <a href="/api/gallery" target="_blank"><button type=button>View catalog gallery ↗</button></a>
 </div>
 </fieldset>
 

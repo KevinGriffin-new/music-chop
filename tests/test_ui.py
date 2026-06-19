@@ -26,12 +26,28 @@ def client(tmp_path, monkeypatch):
     return TestClient(webapp.app)
 
 
-def test_upload_track_lands_in_album_audio(client, tmp_path):
+# Every audio extension track_analyze.py accepts must survive upload. This is a
+# regression guard: if someone trims an ext list, a format silently stops
+# importing. (.m4a was the one we explicitly checked decodes via ffmpeg.)
+AUDIO_EXTS = (".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".aif", ".aiff")
+
+
+@pytest.mark.parametrize("ext", AUDIO_EXTS)
+def test_upload_track_accepts_audio_format(client, tmp_path, ext):
+    name = f"New Song{ext}"
     r = client.post("/api/upload/track",
-                    files={"file": ("New Song.mp3", b"ID3\x00fake", "audio/mpeg")})
-    assert r.status_code == 200
-    assert r.json()["track"] == "New Song.mp3"
-    assert os.path.exists(tmp_path / "album-audio" / "New Song.mp3")
+                    files={"file": (name, b"\x00fake-audio", "application/octet-stream")})
+    assert r.status_code == 200, f"{ext} rejected"
+    assert r.json()["track"] == name
+    assert os.path.exists(tmp_path / "album-audio" / name)
+
+
+def test_web_audio_exts_match_analyzer():
+    """The web allow-list must stay a subset of what the analyzer can read,
+    so we never accept an upload the analyze stage will then choke on."""
+    import importlib
+    analyzer = importlib.import_module("pipeline.track_analyze")
+    assert set(webapp.AUDIO_EXTS).issubset(set(analyzer.AUDIO_EXTS))
 
 
 def test_upload_track_rejects_non_audio(client):
@@ -76,3 +92,40 @@ def test_tkapp_wires_pickers():
     import tkapp           # import only — don't construct a window (needs a display)
     assert hasattr(tkapp.App, "add_track")
     assert hasattr(tkapp.App, "add_footage")
+
+
+# ── catalog gallery ──────────────────────────────────────────────────────────
+def test_gallery_data_build_merges_order(smoke_manifest):
+    from pipeline import clip_gallery
+    data = clip_gallery.build_gallery_data(smoke_manifest)
+    assert data and {"name", "thumb", "clip", "motion", "pos"} <= set(data[0])
+    # _smoke ships an order.csv, so the arranged position should be merged in
+    assert any(d["pos"] != "" for d in data)
+    html = clip_gallery.render_from_data(data)
+    assert "Clip gallery" in html and "DATA =" in html
+
+
+def test_gallery_empty_when_no_catalog(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "MANIFEST", str(tmp_path / "missing.csv"))
+    r = client.get("/api/gallery")
+    assert r.status_code == 200 and "No catalog yet" in r.text
+
+
+def test_gallery_serves_html_with_rewritten_urls(client, smoke_manifest, monkeypatch):
+    monkeypatch.setattr(webapp, "MANIFEST", smoke_manifest)
+    r = client.get("/api/gallery")
+    assert r.status_code == 200
+    body = r.text
+    assert "shot000.mp4" in body                  # a real clip name from _smoke
+    assert "/catalog-files/" in body              # thumb rewritten to served URL
+    assert "/api/clip?path=" in body              # clip link routed through the API
+
+
+def test_clip_endpoint_blocks_paths_outside_media(client):
+    r = client.get("/api/clip", params={"path": "/etc/passwd"})
+    assert r.status_code == 403
+
+
+def test_clip_endpoint_404_for_missing_inside_media(client):
+    r = client.get("/api/clip", params={"path": os.path.join(webapp.MEDIA, "nope.mp4")})
+    assert r.status_code == 404
