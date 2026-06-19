@@ -54,11 +54,17 @@ os.makedirs(CATALOG, exist_ok=True)
 app.mount("/catalog-files", StaticFiles(directory=CATALOG), name="catalog")
 
 FAVICON = os.path.join(engine.HERE, "assets", "icons", "favicon.ico")
+HERO = os.path.join(engine.HERE, "assets", "img", "cameraman.jpg")
 
 
 @app.get("/favicon.ico")
 def favicon():
     return FileResponse(FAVICON, media_type="image/x-icon")
+
+
+@app.get("/hero.jpg")
+def hero():
+    return FileResponse(HERO, media_type="image/jpeg")
 
 
 def _save_upload(upload: UploadFile, dest_dir: str, allowed: tuple) -> str:
@@ -311,7 +317,13 @@ def api_create_project(name: str = Form(...), track: str = Form(...),
 INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <link rel="icon" href="/favicon.ico">
 <body style="font:14px system-ui;max-width:680px;margin:2rem auto">
-<h1>dv2mv — web</h1>
+<div style="position:relative;margin-bottom:1rem">
+  <img src="/hero.jpg" alt="Man with a Movie Camera (Vertov, 1929)"
+    style="width:100%;max-height:200px;object-fit:cover;object-position:center 32%;
+    border-radius:8px;display:block">
+  <h1 style="position:absolute;left:14px;bottom:6px;margin:0;color:#fff;
+    font:600 24px system-ui;text-shadow:0 1px 5px #000">dv2mv</h1>
+</div>
 
 <fieldset style="margin-bottom:1rem">
 <legend>Add media</legend>

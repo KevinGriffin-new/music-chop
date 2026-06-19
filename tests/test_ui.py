@@ -312,6 +312,13 @@ def test_icons_vendored():
     assert os.path.exists(os.path.join(icons, "dv2mv-256.png"))
 
 
+def test_web_hero_served_and_shown(client):
+    r = client.get("/hero.jpg")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert '/hero.jpg' in client.get("/").text
+    assert os.path.exists(os.path.join(REPO, "assets", "img", "cameraman.jpg"))
+
+
 def test_web_gallery_has_selection_layer(proj_client):
     client, _ = proj_client
     html = client.get("/api/gallery").text
