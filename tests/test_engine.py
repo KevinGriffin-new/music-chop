@@ -225,6 +225,8 @@ def test_analyze_writes_json_and_merges(tiny_wav, tmp_path):
     # real step progress (not just start + done) so the UI never looks frozen
     mids = [e.frac for e in evs if e.frac is not None and not e.done]
     assert any(0 < f < 1 for f in mids), f"no intermediate progress: {mids}"
+    # clean completion line, not track_analyze's trailing "Next: …" chatter
+    assert "Analyzed synthsong" in evs[-1].message and "Next:" not in evs[-1].message
 
 
 # ── integration: arrange (sync_clips, numpy only) ────────────────────────────

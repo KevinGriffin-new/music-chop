@@ -366,9 +366,8 @@ def analyze(
     if plot:
         cmd.append("--plot")
     yield ProgressEvent(st, f"analyzing {track} …", None)
-    last, tail = "", []
+    tail = []
     for line in _stream(cmd, cwd=MEDIA):
-        last = line or last
         tail = (tail + [line])[-25:]
         # track_analyze emits "PROG i/n message" per step → a real moving bar
         m = _PROG.search(line)
@@ -384,7 +383,16 @@ def analyze(
     result = {"analysis": analysis}
     if plot and os.path.exists(os.path.join(out_dir, f"{track}.png")):
         result["plot"] = os.path.join(out_dir, f"{track}.png")
-    yield ProgressEvent(st, last or "Analysis complete.", 1.0, True, result)
+    # a clean completion line (not track_analyze's trailing "Next: …" chatter)
+    msg = f"Analyzed {track}."
+    try:
+        with open(analysis) as fh:
+            a = json.load(fh)
+        msg = (f"Analyzed {track} — {a['tempo_bpm']:.0f} BPM, {a['key']}, "
+               f"{len(a.get('sections', []))} sections")
+    except (OSError, ValueError, KeyError):
+        pass
+    yield ProgressEvent(st, msg, 1.0, True, result)
 
 
 # ── stage 4: arrange (sync clips to the track's structure) ─────────────────

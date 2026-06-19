@@ -696,10 +696,17 @@ class App(tk.Tk):
         ttk.OptionMenu(top, choice, names[0], *names).pack(side="left", padx=4, pady=8)
 
         def pick():
+            name = choice.get()
             top.destroy()
-            self._set_project(engine.load_project(engine.MEDIA, choice.get()))
+            self._set_project(engine.load_project(engine.MEDIA, name))
+            self.log.insert("end", f"[project] opened '{name}'\n")
+            self.log.see("end")
         ttk.Button(top, text="Open", command=pick).pack(side="left", padx=8, pady=8)
-        top.transient(self); top.grab_set()
+        top.transient(self)
+        top.grab_set()
+        top.bind("<Return>", lambda e: pick())
+        top.bind("<Escape>", lambda e: top.destroy())
+        top.after(20, top.focus_force)             # surface it (don't open behind)
 
     def _arrange_project_flow(self) -> None:
         p = self.project
@@ -766,14 +773,31 @@ class App(tk.Tk):
         self._spawn(chain)
 
     def open_gallery(self) -> None:
-        """Open the thumbnail contact sheet for the current catalog."""
+        """Open the thumbnail contact sheet for the whole library catalog.
+
+        The gallery always shows the full library (it's the catalog browser).
+        With a project open, its clips come up pre-selected (highlighted) and
+        "Use selection" updates the project's footage; otherwise the action is
+        "New project from selection…".
+        """
         manifest = os.path.join(engine.MEDIA, "catalog", "manifest.csv")
         if not os.path.exists(manifest):
             messagebox.showinfo(
                 "dv2mv — gallery",
                 "No catalog yet — add footage (Video footage…) to build it first.")
             return
-        GalleryWindow(self, manifest)
+        preselect = (self.project.clips if self.project
+                     and isinstance(self.project.clips, list) else None)
+        on_apply = self._set_project_clips if self.project else None
+        GalleryWindow(self, manifest, on_apply=on_apply, preselect=preselect)
+
+    def _set_project_clips(self, clips) -> None:
+        self.project.clips = clips
+        self.project.save()
+        self._set_project(self.project)        # refresh the count in the label
+        self.log.insert("end",
+                        f"[project] {self.project.name}: footage set to {len(clips)} clips\n")
+        self.log.see("end")
 
     # ── main-thread UI pump ────────────────────────────────────────────────
     def _drain(self) -> None:
