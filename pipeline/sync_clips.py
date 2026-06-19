@@ -129,6 +129,8 @@ def main():
     # optional tag suffix so different grids don't clobber each other's sidecars
     tag = re.sub(r"[^A-Za-z0-9._-]+", "-", args.tag).strip("-")
     sfx = f"-{tag}" if tag else ""
+    matchpct = 100 * (1 - np.mean([abs(cm_n[i] - tgt)
+                                   for _, _, _, _, tgt, i in assignments]))
 
     # 1) order csv
     order_csv = os.path.join(out_dir, f"order-sync-{track}{sfx}.csv")
@@ -161,7 +163,12 @@ def main():
     ntotal = nseg + 2
     with open(render, "w") as fh:
         fh.write("#!/usr/bin/env bash\nset -euo pipefail\n")
-        fh.write(f'# Renders a cut of {track} synced to the music ({args.grid} grid)\n')
+        fh.write(f'# dv2mv render — cut-{track}{sfx}.mp4\n')
+        fh.write(f'# arrange: grid={args.grid} beats_per_cut={args.beats_per_cut} '
+                 f'allow_reuse={args.allow_reuse} drop_blurry={args.drop_blurry} '
+                 f'clip_from={args.clip_from} tag={tag or "(none)"}\n')
+        fh.write(f'# {len(assignments)} cuts · ~{matchpct:.0f}% energy match · '
+                 f'{an["tempo_bpm"]:.0f} BPM {an["key"]}\n')
         fh.write('TMP="$(mktemp -d)"\n')
         fh.write(f'MUSIC="{an["path"]}"\n')
         fh.write('echo "rendering segments..."\n')
@@ -186,14 +193,44 @@ def main():
         fh.write(f'echo "wrote ./cut-{track}{sfx}.mp4"\nrm -rf "$TMP"\n')
     os.chmod(render, 0o755)
 
+    # 5) arrange metadata — the options + stats that produced this cut, so an
+    #    arrangement (and its render) is self-documenting / reproducible.
+    arrange_json = os.path.join(out_dir, f"{track}{sfx}.arrange.json")
+    meta = {
+        "track": track,
+        "tag": tag,
+        "grid": args.grid,
+        "beats_per_cut": args.beats_per_cut,
+        "allow_reuse": bool(args.allow_reuse),
+        "drop_blurry": args.drop_blurry,
+        "clip_from": args.clip_from,
+        "analysis": os.path.abspath(args.analysis),
+        "manifest": os.path.abspath(args.manifest),
+        "tempo_bpm": an.get("tempo_bpm"),
+        "key": an.get("key"),
+        "cuts": len(assignments),
+        "slots": len(slots),
+        "clips": len(clips),
+        "energy_match_pct": round(float(matchpct), 1),
+        "outputs": {
+            "order": os.path.basename(order_csv),
+            "labels": os.path.basename(labels),
+            "markers": os.path.basename(markers),
+            "render_sh": os.path.basename(render),
+            "cut": f"cut-{track}{sfx}.mp4",
+        },
+    }
+    with open(arrange_json, "w") as fh:
+        json.dump(meta, fh, indent=1)
+
     # console summary
-    matchpct = 100 * (1 - np.mean([abs(cm_n[i] - tgt) for _, _, _, _, tgt, i in assignments]))
     print(f"Synced {len(assignments)} cuts to '{track}' "
           f"({an['tempo_bpm']:.0f} BPM, {an['key']}) on the {args.grid} grid")
     print(f"  energy match: ~{matchpct:.0f}%   slots: {len(slots)}   clips: {len(clips)}")
     print(f"  order:   {order_csv}")
     print(f"  labels:  {labels}   (Audacity: File > Import > Labels)")
     print(f"  markers: {markers}")
+    print(f"  options: {arrange_json}")
     print(f"  render:  bash {render}   ->  cut-{track}{sfx}.mp4")
 
 

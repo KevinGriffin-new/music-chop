@@ -456,8 +456,10 @@ def arrange(
               "labels": os.path.join(out_dir, f"{track}{sfx}.labels.txt"),
               "markers": os.path.join(out_dir, f"{track}{sfx}.markers.csv"),
               "render_sh": os.path.join(out_dir, f"render-{track}{sfx}.sh"),
+              "options": os.path.join(out_dir, f"{track}{sfx}.arrange.json"),
               "energy_match": match}
-    _require(st, {k: result[k] for k in ("order", "labels", "markers", "render_sh")}, tail)
+    _require(st, {k: result[k] for k in
+                  ("order", "labels", "markers", "render_sh", "options")}, tail)
     yield ProgressEvent(st, f"Arranged ({match}% energy match)." if match is not None
                         else "Arranged.", 1.0, True, result)
 

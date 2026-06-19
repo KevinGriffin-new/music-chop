@@ -228,13 +228,26 @@ def test_analyze_writes_json_and_merges(tiny_wav, tmp_path):
 # ── integration: arrange (sync_clips, numpy only) ────────────────────────────
 def test_arrange_builds_sidecars_with_tag(synth_analysis, smoke_manifest):
     final = engine.run_stage(
-        engine.arrange(synth_analysis, smoke_manifest, grid="sections"),
+        engine.arrange(synth_analysis, smoke_manifest, grid="sections",
+                       beats_per_cut=3, allow_reuse=True, clip_from="start"),
         lambda e: None)
-    for key in ("order", "labels", "markers", "render_sh"):
+    for key in ("order", "labels", "markers", "render_sh", "options"):
         assert os.path.exists(final[key]), f"{key} not written"
     # tag defaults to the grid, so the suffix is in the names
     assert "-sections" in os.path.basename(final["render_sh"])
     assert isinstance(final["energy_match"], int)
+
+    # the arrange.json records exactly what options produced this cut
+    import json
+    meta = json.load(open(final["options"]))
+    assert meta["grid"] == "sections" and meta["beats_per_cut"] == 3
+    assert meta["allow_reuse"] is True and meta["clip_from"] == "start"
+    assert meta["tag"] == "sections" and "energy_match_pct" in meta
+    assert meta["outputs"]["cut"].startswith("cut-") and meta["outputs"]["cut"].endswith(".mp4")
+
+    # and the render script header is stamped with the same options
+    sh = open(final["render_sh"]).read()
+    assert "grid=sections" in sh and "clip_from=start" in sh
     # render script is executable
     assert os.stat(final["render_sh"]).st_mode & stat.S_IXUSR
 
