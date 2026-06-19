@@ -89,7 +89,16 @@ DV2MV_MEDIA=/path/to/media DV2MV_PLAYER=VLC python3 tkapp.py   # macOS: open -a 
 ## Test
 
 ```bash
-python3 -m pytest tests        # ≈4 s; integration tests self-skip if a tool is missing
+python3 -m pytest tests        # ≈9 s; integration tests self-skip if a tool is missing
+```
+
+There's also an **opt-in** real-window GUI smoke for the Tk app (driven by
+pyautogui — it moves the mouse and needs macOS Accessibility permission for your
+terminal):
+
+```bash
+pip install pyautogui
+DV2MV_MEDIA=/path/to/media python3 tests/gui_smoke.py   # opens the app, clicks through New project
 ```
 
 ## License

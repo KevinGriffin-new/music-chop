@@ -27,3 +27,5 @@ python-multipart   # required for file uploads (UploadFile / multipart forms)
 # ── dev / test ──
 pytest             # run: python3 -m pytest tests
 httpx              # FastAPI TestClient (web upload tests)
+pyautogui          # opt-in Tk GUI smoke (tests/gui_smoke.py); needs a display
+                   # + macOS Accessibility permission, moves the real mouse
