@@ -319,3 +319,64 @@ def test_render_produces_video_with_real_progress(clips_dir, tiny_wav, tmp_path)
     # the per-segment echoes give a real (non-None) advancing fraction
     fracs = [e.frac for e in evs if e.frac is not None]
     assert fracs and max(fracs) == pytest.approx(1.0)
+
+
+# ── projects ─────────────────────────────────────────────────────────────────
+def _smoke_clip_paths(manifest, n):
+    import csv as _csv
+    with open(manifest, newline="") as fh:
+        return [r["clip"] for r in list(_csv.DictReader(fh))[:n]]
+
+
+def test_project_save_load_roundtrip(tmp_path):
+    p = engine.Project(name="My Vid", track="02 Erased.mp3", clips=["/a.mp4"],
+                       grid="beats", beats_per_cut=2, allow_reuse=True,
+                       dir=str(tmp_path / "proj"))
+    path = p.save()
+    q = engine.Project.load(path)
+    assert q.name == "My Vid" and q.track == "02 Erased.mp3"
+    assert q.clips == ["/a.mp4"] and q.grid == "beats" and q.allow_reuse is True
+    assert q.arrange_opts()["beats_per_cut"] == 2
+
+
+def test_new_list_load_project(tmp_path):
+    media = str(tmp_path)
+    engine.new_project(media, "Summer Reel", "05 Of Ash.mp3", clips="all", grid="downbeats")
+    assert engine.list_projects(media) == ["Summer Reel"]
+    p = engine.load_project(media, "Summer Reel")
+    assert p.track == "05 Of Ash.mp3" and p.grid == "downbeats" and p.clips == "all"
+
+
+def test_write_scoped_manifest(tmp_path, smoke_manifest):
+    # "all" -> use the library manifest untouched
+    assert engine.write_scoped_manifest(smoke_manifest, "all", "x") == smoke_manifest
+    # a subset -> a filtered manifest with only those rows
+    picks = _smoke_clip_paths(smoke_manifest, 2)
+    out = str(tmp_path / "scope.csv")
+    engine.write_scoped_manifest(smoke_manifest, picks, out)
+    import csv as _csv
+    rows = list(_csv.DictReader(open(out)))
+    assert len(rows) == 2 and {r["clip"] for r in rows} == set(picks)
+    # a selection matching nothing fails loud
+    with pytest.raises(engine.StageError):
+        engine.write_scoped_manifest(smoke_manifest, ["/nope.mp4"], str(tmp_path / "y.csv"))
+
+
+def test_manifest_sources(smoke_manifest):
+    src = engine.manifest_sources(smoke_manifest)
+    assert src and all(isinstance(v, list) and v for v in src.values())
+
+
+def test_arrange_project_outputs_into_project_dir(tmp_path, smoke_manifest):
+    import shutil
+    media = tmp_path / "media"
+    (media / "catalog_audio").mkdir(parents=True)
+    (media / "catalog").mkdir()
+    write_analysis(str(media / "catalog_audio"), "/tmp/Song.mp3", track="Song")
+    shutil.copy(smoke_manifest, media / "catalog" / "manifest.csv")
+    p = engine.new_project(str(media), "Proj1", "Song.mp3", clips="all", grid="sections")
+    final = engine.run_stage(engine.arrange_project(p, str(media)), lambda e: None)
+    # outputs live in the project folder, not the shared catalog_audio
+    assert os.path.dirname(final["render_sh"]) == p.dir
+    assert os.path.exists(final["render_sh"]) and os.path.exists(final["options"])
+    assert final["summary"]["grid"] == "sections"

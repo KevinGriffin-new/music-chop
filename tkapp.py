@@ -21,10 +21,10 @@ two patterns the Tk side hinges on:
      mp4 to the OS player (open / xdg-open / start). That's the deliberate
      trade vs. the web tier's inline <video>.
 
-File pickers are wired (Add ▸ Music track… / Video footage…): a track is
-analyzed in place; footage is scene-split then cataloged. The clip gallery
-(Gallery… → a scrollable Canvas of the thumbs/ jpgs, click to play) is wired
-too. Still to flesh out: the grid/reuse parameter controls and cancellation.
+File pickers (Add ▸ Music track… / Video footage…), the clip gallery (Gallery…),
+the IRIX arrange-options dialog, and projects (New… / Open… — a project scopes a
+track + a clip selection + arrange options to its own folder) are all wired.
+Still to flesh out: cancellation, and gallery-based clip selection for projects.
 
 Run:  python3 tkapp.py        (Tkinter ships with CPython)
 """
@@ -351,6 +351,85 @@ class ArrangeOptions(tk.Toplevel):
         self.on_ok(p)
 
 
+class NewProjectDialog(tk.Toplevel):
+    """IRIX-styled dialog to create a project: name + track + clip selection.
+
+    Footage is scoped to the shared library — 'all' or a set of source/tapes.
+    Arrange options are chosen later (via the Arrange dialog) and saved onto the
+    project. on_ok(name, track, clips) does the actual creation.
+    """
+    def __init__(self, master, media, default_track, on_ok) -> None:
+        super().__init__(master)
+        self.title("New project")
+        apply_irix_theme(self)
+        self.configure(bg=IRIX["bg"])
+        self.media = media
+        self.on_ok = on_ok
+        self.v_name = tk.StringVar()
+        self.v_track = tk.StringVar(value=default_track)
+        self.v_scope = tk.StringVar(value="all")
+        self._src_vars = {}
+
+        pad = dict(padx=8, pady=4)
+        nf = ttk.Frame(self, padding=4); nf.pack(fill="x", **pad)
+        ttk.Label(nf, text="Name:").pack(side="left")
+        ttk.Entry(nf, textvariable=self.v_name).pack(side="left", fill="x", expand=True, padx=6)
+        tf = ttk.Frame(self, padding=4); tf.pack(fill="x", **pad)
+        ttk.Label(tf, text="Track:").pack(side="left")
+        ttk.Entry(tf, textvariable=self.v_track).pack(side="left", fill="x", expand=True, padx=6)
+
+        sf = ttk.LabelFrame(self, text="Footage")
+        sf.pack(fill="both", expand=True, **pad)
+        ttk.Radiobutton(sf, text="All library footage", value="all",
+                        variable=self.v_scope, command=self._sync).pack(anchor="w", padx=8)
+        ttk.Radiobutton(sf, text="By source / tape:", value="sources",
+                        variable=self.v_scope, command=self._sync).pack(anchor="w", padx=8)
+        self.srcbox = ttk.Frame(sf)
+        self.srcbox.pack(fill="x", padx=24)
+        for s in sorted(engine.manifest_sources(
+                os.path.join(media, "catalog", "manifest.csv"))):
+            v = tk.BooleanVar()
+            self._src_vars[s] = v
+            ttk.Checkbutton(self.srcbox, text=s, variable=v).pack(anchor="w")
+        if not self._src_vars:
+            ttk.Label(self.srcbox, text="(no catalog yet — add footage first)").pack(anchor="w")
+
+        bar = ttk.Frame(self, padding=4); bar.pack(fill="x", **pad)
+        ttk.Button(bar, text="Create", command=self._ok).pack(side="right", padx=4)
+        ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right")
+        self._sync()
+        self.transient(master)
+        self.grab_set()
+
+    def _sync(self) -> None:
+        state = "normal" if self.v_scope.get() == "sources" else "disabled"
+        for w in self.srcbox.winfo_children():
+            try:
+                w.configure(state=state)
+            except tk.TclError:
+                pass
+
+    def clips(self):
+        if self.v_scope.get() == "all":
+            return "all"
+        srcmap = engine.manifest_sources(
+            os.path.join(self.media, "catalog", "manifest.csv"))
+        chosen = []
+        for s, v in self._src_vars.items():
+            if v.get():
+                chosen += srcmap.get(s, [])
+        return chosen or "all"
+
+    def _ok(self) -> None:
+        name = self.v_name.get().strip()
+        if not name:
+            messagebox.showwarning("New project", "Please enter a project name.")
+            return
+        track, clips = self.v_track.get().strip(), self.clips()
+        self.destroy()
+        self.on_ok(name, track, clips)
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -359,10 +438,18 @@ class App(tk.Tk):
         self.configure(bg=IRIX["bg"])
         self.q: queue.Queue[engine.ProgressEvent] = queue.Queue()
         self._last_grid = None     # grid chosen in the options dialog; render reuses it
+        self.project = None        # active Project (None => whole-library mode)
 
         title_font = (IRIX_MENU_FONT[0], IRIX_MENU_FONT[1] + 2, "bold italic")
         ttk.Label(self, text="dv2mv — offline", anchor="center", relief="raised",
                   borderwidth=2, padding=4, font=title_font).pack(fill="x")
+
+        proj = ttk.Frame(self, padding=4)
+        proj.pack(fill="x", padx=6, pady=(6, 0))
+        self.proj_label = ttk.Label(proj, text="Project: (none — library mode)")
+        self.proj_label.pack(side="left", padx=4)
+        ttk.Button(proj, text="Open…", command=self.open_project_dialog).pack(side="right", padx=4)
+        ttk.Button(proj, text="New…", command=self.new_project_dialog).pack(side="right", padx=4)
 
         row = ttk.Frame(self, padding=4)
         row.pack(fill="x", padx=6, pady=6)
@@ -461,9 +548,14 @@ class App(tk.Tk):
             self._spawn(lambda: engine.analyze(
                 os.path.join(media, "album-audio", track), cat))
         elif stage == "arrange":
-            self._open_arrange_options(track, cat, media)
+            if self.project:
+                self._arrange_project_flow()
+            else:
+                self._open_arrange_options(track, cat, media)
+        elif self.project:                                   # render the project
+            self._spawn(lambda: engine.render_project(self.project))
         else:
-            # prefer the script for the grid last arranged; else the newest match
+            # library mode: prefer the grid last arranged; else the newest match
             sh = None
             if self._last_grid:
                 cand = os.path.join(cat, f"render-{stem}{engine._tag_suffix(self._last_grid)}.sh")
@@ -471,6 +563,62 @@ class App(tk.Tk):
             sh = sh or engine.find_render_script(cat, track) or os.path.join(
                 cat, f"render-{stem}.sh")
             self._spawn(lambda: engine.render(sh))
+
+    # ── projects ────────────────────────────────────────────────────────────
+    def _set_project(self, p) -> None:
+        self.project = p
+        if p:
+            self.proj_label.config(text=f"Project: {p.name}  ({p.clips if p.clips=='all' else str(len(p.clips))+' clips'})")
+            self.track.delete(0, "end")
+            self.track.insert(0, p.track)
+        else:
+            self.proj_label.config(text="Project: (none — library mode)")
+
+    def new_project_dialog(self) -> None:
+        def created(name, track, clips):
+            p = engine.new_project(engine.MEDIA, name, track, clips=clips)
+            self._set_project(p)
+            self.log.insert("end", f"[project] created '{name}' → {p.dir}\n")
+            self.log.see("end")
+        NewProjectDialog(self, engine.MEDIA, self.track.get().strip(), on_ok=created)
+
+    def open_project_dialog(self) -> None:
+        names = engine.list_projects(engine.MEDIA)
+        if not names:
+            messagebox.showinfo("dv2mv — projects",
+                                "No projects yet — use New… to create one.")
+            return
+        top = tk.Toplevel(self)
+        top.title("Open project")
+        apply_irix_theme(top)
+        top.configure(bg=IRIX["bg"])
+        ttk.Label(top, text="Project:").pack(side="left", padx=8, pady=8)
+        choice = tk.StringVar(value=names[0])
+        ttk.OptionMenu(top, choice, names[0], *names).pack(side="left", padx=4, pady=8)
+
+        def pick():
+            top.destroy()
+            self._set_project(engine.load_project(engine.MEDIA, choice.get()))
+        ttk.Button(top, text="Open", command=pick).pack(side="left", padx=8, pady=8)
+        top.transient(self); top.grab_set()
+
+    def _arrange_project_flow(self) -> None:
+        p = self.project
+        stem = os.path.splitext(p.track)[0]
+        analysis = os.path.join(engine.MEDIA, "catalog_audio", f"{stem}.analysis.json")
+        if not os.path.exists(analysis):
+            messagebox.showinfo(
+                "dv2mv — arrange",
+                f"No analysis for '{stem}' yet — run Analyze on the track first.")
+            return
+
+        def run(opts):
+            for k, v in opts.items():
+                setattr(p, k, v)
+            p.save()
+            self.status.config(text=f"arranging project '{p.name}' …")
+            self._spawn(lambda: engine.arrange_project(p, engine.MEDIA))
+        ArrangeOptions(self, on_ok=run, initial=p.arrange_opts())
 
     def _open_arrange_options(self, track: str, cat: str, media: str) -> None:
         stem = os.path.splitext(track)[0]

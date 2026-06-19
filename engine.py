@@ -416,6 +416,7 @@ def arrange(
     drop_blurry: float = 0.0,
     clip_from: str = "middle",         # middle | start
     tag: Optional[str] = None,         # output suffix; defaults to the grid name
+    out_dir: Optional[str] = None,     # where outputs land; default = analysis dir
 ) -> Iterator[ProgressEvent]:
     """Build the cut: order-sync csv, labels, markers, and render-<track>.sh.
 
@@ -444,6 +445,9 @@ def arrange(
            "--beats-per-cut", str(beats_per_cut),
            "--drop-blurry", str(drop_blurry), "--clip-from", clip_from,
            "--tag", tag]
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        cmd += ["--out", out_dir]
     if allow_reuse:
         cmd.append("--allow-reuse")
     yield ProgressEvent(st, f"syncing clips on the {grid} grid …", None)
@@ -453,13 +457,13 @@ def arrange(
         m = _MATCH.search(line)
         if m:
             match = int(m.group(1))
-    out_dir = os.path.dirname(os.path.abspath(analysis_json))
+    dest = out_dir or os.path.dirname(os.path.abspath(analysis_json))
     sfx = _tag_suffix(tag)
-    result = {"order": os.path.join(out_dir, f"order-sync-{track}{sfx}.csv"),
-              "labels": os.path.join(out_dir, f"{track}{sfx}.labels.txt"),
-              "markers": os.path.join(out_dir, f"{track}{sfx}.markers.csv"),
-              "render_sh": os.path.join(out_dir, f"render-{track}{sfx}.sh"),
-              "options": os.path.join(out_dir, f"{track}{sfx}.arrange.json"),
+    result = {"order": os.path.join(dest, f"order-sync-{track}{sfx}.csv"),
+              "labels": os.path.join(dest, f"{track}{sfx}.labels.txt"),
+              "markers": os.path.join(dest, f"{track}{sfx}.markers.csv"),
+              "render_sh": os.path.join(dest, f"render-{track}{sfx}.sh"),
+              "options": os.path.join(dest, f"{track}{sfx}.arrange.json"),
               "energy_match": match}
     _require(st, {k: result[k] for k in
                   ("order", "labels", "markers", "render_sh", "options")}, tail)
@@ -502,6 +506,134 @@ def render(render_sh: str) -> Iterator[ProgressEvent]:
         yield ProgressEvent(st, line, frac)
     _require(st, {"video": video}, tail)
     yield ProgressEvent(st, "Render complete.", 1.0, True, {"video": video})
+
+
+# ── projects ────────────────────────────────────────────────────────────────
+# A project scopes one music video: a track + a clip selection (a subset of the
+# shared library catalog, or "all") + arrange options + its own output folder.
+# The library (MEDIA/catalog) stays global; a project just *references* library
+# clips, so footage is never copied per project.
+PROJECTS_DIRNAME = "projects"
+
+
+def _safe_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._ -]+", "-", name or "").strip().strip("-") or "untitled"
+
+
+@dataclass
+class Project:
+    name: str
+    track: str                          # audio filename, e.g. "02 Erased.mp3"
+    clips: object = "all"               # list of clip paths, or "all" (whole library)
+    grid: str = "sections"
+    beats_per_cut: int = 4
+    allow_reuse: bool = False
+    drop_blurry: float = 0.0
+    clip_from: str = "middle"
+    dir: str = ""                       # project folder (holds project.json + outputs)
+
+    def arrange_opts(self) -> dict:
+        return {"grid": self.grid, "beats_per_cut": self.beats_per_cut,
+                "allow_reuse": self.allow_reuse, "drop_blurry": self.drop_blurry,
+                "clip_from": self.clip_from}
+
+    def to_dict(self) -> dict:
+        d = {k: getattr(self, k) for k in
+             ("name", "track", "clips", "grid", "beats_per_cut",
+              "allow_reuse", "drop_blurry", "clip_from")}
+        return d
+
+    def save(self) -> str:
+        os.makedirs(self.dir, exist_ok=True)
+        path = os.path.join(self.dir, "project.json")
+        with open(path, "w") as fh:
+            json.dump(self.to_dict(), fh, indent=1)
+        return path
+
+    @classmethod
+    def load(cls, path: str) -> "Project":
+        with open(path) as fh:
+            d = json.load(fh)
+        d["dir"] = os.path.dirname(os.path.abspath(path))
+        return cls(**d)
+
+
+def projects_root(media: str) -> str:
+    return os.path.join(media, PROJECTS_DIRNAME)
+
+
+def list_projects(media: str) -> list[str]:
+    """Names of projects (subfolders of MEDIA/projects with a project.json)."""
+    root = projects_root(media)
+    if not os.path.isdir(root):
+        return []
+    return sorted(d for d in os.listdir(root)
+                  if os.path.exists(os.path.join(root, d, "project.json")))
+
+
+def new_project(media: str, name: str, track: str, clips="all", **opts) -> Project:
+    """Create + persist a project under MEDIA/projects/<name>/."""
+    p = Project(name=name, track=track, clips=clips,
+                dir=os.path.join(projects_root(media), _safe_name(name)),
+                **{k: v for k, v in opts.items() if k in
+                   ("grid", "beats_per_cut", "allow_reuse", "drop_blurry", "clip_from")})
+    p.save()
+    return p
+
+
+def load_project(media: str, name: str) -> Project:
+    return Project.load(os.path.join(projects_root(media), _safe_name(name), "project.json"))
+
+
+def manifest_sources(library_manifest: str) -> dict:
+    """Map each source/tape -> [clip paths] from the library manifest, for the
+    selection UI. Empty dict if the manifest is absent."""
+    out: dict = {}
+    if not os.path.exists(library_manifest):
+        return out
+    with open(library_manifest, newline="") as fh:
+        for r in csv.DictReader(fh):
+            out.setdefault(r.get("source", "") or "unknown", []).append(r["clip"])
+    return out
+
+
+def write_scoped_manifest(library_manifest: str, clips, out_path: str) -> str:
+    """Return a manifest restricted to `clips`. If clips is "all"/empty, the
+    library manifest is used as-is; otherwise a subset is written to out_path."""
+    if clips == "all" or not clips:
+        return library_manifest
+    keep = {os.path.abspath(c) for c in clips}
+    with open(library_manifest, newline="") as fh:
+        r = csv.DictReader(fh)
+        rows = [row for row in r if os.path.abspath(row["clip"]) in keep]
+        fields = r.fieldnames
+    if not rows:
+        raise StageError("This project's clip selection matched no library clips.")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+    return out_path
+
+
+def arrange_project(project: Project, media: str) -> Iterator[ProgressEvent]:
+    """Arrange a project: scoped manifest + the shared analysis -> the project's
+    own folder (tag="" so a project owns exactly one current arrangement)."""
+    stem = os.path.splitext(project.track)[0]
+    analysis = os.path.join(media, "catalog_audio", f"{stem}.analysis.json")
+    library = os.path.join(media, "catalog", "manifest.csv")
+    manifest = write_scoped_manifest(
+        library, project.clips, os.path.join(project.dir, "manifest-scope.csv"))
+    yield from arrange(analysis, manifest, out_dir=project.dir, tag="",
+                       **project.arrange_opts())
+
+
+def render_project(project: Project) -> Iterator[ProgressEvent]:
+    """Render the project's current arrangement (script in the project folder)."""
+    sh = find_render_script(project.dir, project.track) or os.path.join(
+        project.dir, f"render-{os.path.splitext(project.track)[0]}.sh")
+    yield from render(sh)
 
 
 # ── smoke test ─────────────────────────────────────────────────────────────

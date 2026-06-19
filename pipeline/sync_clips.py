@@ -92,6 +92,9 @@ def main():
     ap.add_argument("--tag", default="",
                     help="suffix for output names so different grids don't "
                          "overwrite each other (e.g. order-sync-<track>-<tag>.csv)")
+    ap.add_argument("--out", default="",
+                    help="output directory (default: the analysis file's dir); "
+                         "lets a project own its arrangement outputs")
     args = ap.parse_args()
 
     with open(args.analysis) as fh:
@@ -126,7 +129,8 @@ def main():
             if not available:
                 available = set(range(len(clips)))  # wrap if we run out
 
-    out_dir = os.path.dirname(os.path.abspath(args.analysis))
+    out_dir = os.path.abspath(args.out) if args.out else os.path.dirname(os.path.abspath(args.analysis))
+    os.makedirs(out_dir, exist_ok=True)
     track = an["track"]
     # optional tag suffix so different grids don't clobber each other's sidecars
     tag = re.sub(r"[^A-Za-z0-9._-]+", "-", args.tag).strip("-")

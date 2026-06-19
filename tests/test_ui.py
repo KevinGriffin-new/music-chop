@@ -183,6 +183,57 @@ def test_tk_gallery_window_and_button_present():
 
 
 # ── Tk arrange options dialog (IRIX-themed) ──────────────────────────────────
+def test_tk_project_wiring_present():
+    pytest.importorskip("tkinter")
+    import tkapp
+    assert hasattr(tkapp, "NewProjectDialog")
+    for attr in ("new_project_dialog", "open_project_dialog", "_set_project",
+                 "_arrange_project_flow"):
+        assert hasattr(tkapp.App, attr), attr
+
+
+def test_tk_set_project_updates_label(tmp_path):
+    pytest.importorskip("tkinter")
+    import tkinter as tk
+    import tkapp
+    import engine
+    try:
+        app = tkapp.App(); app.withdraw()
+    except tk.TclError:
+        pytest.skip("no display")
+    try:
+        p = engine.Project(name="Demo", track="X.mp3", clips="all", dir=str(tmp_path))
+        app._set_project(p)
+        assert "Demo" in app.proj_label.cget("text")
+        assert app.track.get() == "X.mp3"
+        app._set_project(None)
+        assert "library mode" in app.proj_label.cget("text")
+    finally:
+        app.destroy()
+
+
+def test_tk_new_project_dialog_builds(tmp_path):
+    pytest.importorskip("tkinter")
+    import tkinter as tk
+    import tkapp
+    try:
+        root = tk.Tk(); root.withdraw()
+    except tk.TclError:
+        pytest.skip("no display")
+    try:
+        captured = {}
+        dlg = tkapp.NewProjectDialog(
+            root, str(tmp_path), "02 Erased.mp3",
+            on_ok=lambda n, t, c: captured.update(name=n, track=t, clips=c))
+        root.update_idletasks()
+        assert dlg.clips() == "all"           # default scope = whole library
+        dlg.v_name.set("My Project")
+        dlg._ok()
+        assert captured == {"name": "My Project", "track": "02 Erased.mp3", "clips": "all"}
+    finally:
+        root.destroy()
+
+
 def test_tk_arrange_options_present():
     pytest.importorskip("tkinter")
     import tkapp
