@@ -24,7 +24,8 @@ two patterns the Tk side hinges on:
 File pickers (Add ▸ Music track… / Video footage…), the clip gallery (Gallery…),
 the IRIX arrange-options dialog, and projects (New… / Open… — a project scopes a
 track + a clip selection + arrange options to its own folder) are all wired.
-Still to flesh out: cancellation, and gallery-based clip selection for projects.
+Clip selection is gallery-based: multi-select thumbnails, then "New project from
+selection…". Still to flesh out: cancellation of a running stage.
 
 Run:  python3 tkapp.py        (Tkinter ships with CPython)
 """
@@ -202,27 +203,36 @@ class GalleryWindow(tk.Toplevel):
     """
     COLS = 4
     THUMB = (150, 100)
+    SEL = "#5b9dff"            # selection highlight
 
-    def __init__(self, master, manifest_path: str) -> None:
+    def __init__(self, master, manifest_path: str, on_apply=None, preselect=None) -> None:
         super().__init__(master)
         self.title("dv2mv — clip gallery")
-        self.configure(bg=GREY)
-        self.geometry("680x520")
+        self.configure(bg=IRIX["bg"])
+        self.geometry("700x560")
         self._manifest = manifest_path
         self._images = []          # keep PhotoImage refs alive (else they GC away)
+        self._cells = {}           # clip path -> its card frame (for select-all/marking)
+        self.selected = set(preselect or [])
+        self._on_apply = on_apply  # if set, "Use selection" returns clips; else New project
 
-        self.head = tk.Label(self, text="loading…", bg=DARK, fg="white", font=FONT,
-                             anchor="w", relief="sunken", bd=2)
-        self.head.pack(fill="x")
+        bar = ttk.Frame(self, padding=4)
+        bar.pack(fill="x")
+        self.count = ttk.Label(bar, text="loading…")
+        self.count.pack(side="left", padx=4)
+        ttk.Button(bar, text="Clear", command=self.clear_selection).pack(side="right", padx=2)
+        ttk.Button(bar, text="Select all", command=self.select_all).pack(side="right", padx=2)
+        ttk.Button(bar, text=("Use selection" if on_apply else "New project from selection…"),
+                   command=self._apply).pack(side="right", padx=2)
 
-        body = tk.Frame(self, bg=GREY)
+        body = tk.Frame(self, bg=IRIX["bg"])
         body.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(body, bg=GREY, highlightthickness=0)
+        self.canvas = tk.Canvas(body, bg=IRIX["bg"], highlightthickness=0)
         vsb = tk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.inner = tk.Frame(self.canvas, bg=GREY)
+        self.inner = tk.Frame(self.canvas, bg=IRIX["bg"])
         self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", lambda e: self.canvas.configure(
             scrollregion=self.canvas.bbox("all")))
@@ -249,16 +259,17 @@ class GalleryWindow(tk.Toplevel):
         from PIL import Image, ImageTk
         for _ in range(16):
             if not self._queue:
-                self.head.config(text=f"{self._total} clips — click a thumb to play")
+                self._update_count()
                 return
             i, d = self._queue.pop(0)
             self._add_card(i, d, Image, ImageTk)
-        self.head.config(text=f"loading… {self._total - len(self._queue)}/{self._total}")
+        self.count.config(text=f"loading… {self._total - len(self._queue)}/{self._total}")
         self.after(1, self._load_chunk)
 
     def _add_card(self, i, d, Image, ImageTk) -> None:
         r, c = divmod(i, self.COLS)
-        cell = tk.Frame(self.inner, bg=GREY, relief="raised", bd=2)
+        cell = tk.Frame(self.inner, bg=IRIX["bg"], relief="raised", bd=2,
+                        highlightthickness=0, highlightbackground=self.SEL)
         cell.grid(row=r, column=c, padx=4, pady=4, sticky="n")
         path = gallery_thumb_path(self._manifest, d.get("thumb", ""))
         try:
@@ -269,13 +280,70 @@ class GalleryWindow(tk.Toplevel):
         img = ImageTk.PhotoImage(im)
         self._images.append(img)
         clip = gallery_clip_path(d)
+        self._cells[clip] = cell
         thumb = tk.Label(cell, image=img, bg="black", cursor="hand2")
         thumb.pack()
-        thumb.bind("<Button-1>", lambda e, p=clip: open_in_player(p))
-        tk.Label(cell, text=d.get("name", "")[:22], bg=GREY,
+        # single click toggles selection; double-click plays (net selection
+        # unchanged: the two Button-1 events of a double-click cancel out)
+        thumb.bind("<Button-1>", lambda e, p=clip: self.toggle(p))
+        thumb.bind("<Double-Button-1>", lambda e, p=clip: open_in_player(p))
+        tk.Label(cell, text=d.get("name", "")[:22], bg=IRIX["bg"], fg=IRIX["fg"],
                  font=("Helvetica", 9)).pack()
         for w in (cell, thumb):
             self._bind_wheel(w)
+        if clip in self.selected:
+            self._mark(cell, True)
+
+    # ── selection ───────────────────────────────────────────────────────────
+    def _mark(self, cell, on: bool) -> None:
+        cell.config(highlightthickness=3 if on else 0)
+
+    def toggle(self, clip: str) -> None:
+        if clip in self.selected:
+            self.selected.discard(clip)
+            self._mark(self._cells[clip], False)
+        else:
+            self.selected.add(clip)
+            self._mark(self._cells[clip], True)
+        self._update_count()
+
+    def select_all(self) -> None:
+        for clip, cell in self._cells.items():
+            self.selected.add(clip)
+            self._mark(cell, True)
+        self._update_count()
+
+    def clear_selection(self) -> None:
+        for clip in list(self.selected):
+            if clip in self._cells:
+                self._mark(self._cells[clip], False)
+        self.selected.clear()
+        self._update_count()
+
+    def _update_count(self) -> None:
+        n = len(self.selected)
+        hint = "" if n else " — click to select, double-click to play"
+        self.count.config(text=f"{self._total} clips · {n} selected{hint}")
+
+    def _apply(self) -> None:
+        clips = sorted(self.selected)
+        if not clips:
+            messagebox.showinfo("dv2mv — gallery",
+                                "Select some clips first (click thumbnails).")
+            return
+        if self._on_apply:
+            self._on_apply(clips)
+            self.destroy()
+        else:
+            self.destroy()
+            self.master.new_project_dialog(preset_clips=clips)
+
+    def destroy(self) -> None:
+        # drop the PhotoImage refs while the interpreter is still alive (avoids
+        # ImageTk finalizers firing into a dead Tcl interp on GC)
+        self._images.clear()
+        self._cells.clear()
+        super().destroy()
 
 
 class ArrangeOptions(tk.Toplevel):
@@ -358,16 +426,17 @@ class NewProjectDialog(tk.Toplevel):
     Arrange options are chosen later (via the Arrange dialog) and saved onto the
     project. on_ok(name, track, clips) does the actual creation.
     """
-    def __init__(self, master, media, default_track, on_ok) -> None:
+    def __init__(self, master, media, default_track, on_ok, clips=None) -> None:
         super().__init__(master)
         self.title("New project")
         apply_irix_theme(self)
         self.configure(bg=IRIX["bg"])
         self.media = media
         self.on_ok = on_ok
+        self._preset = list(clips) if clips else None
         self.v_name = tk.StringVar()
         self.v_track = tk.StringVar(value=default_track)
-        self.v_scope = tk.StringVar(value="all")
+        self.v_scope = tk.StringVar(value="selected" if self._preset else "all")
         self._src_vars = {}
 
         pad = dict(padx=8, pady=4)
@@ -380,6 +449,10 @@ class NewProjectDialog(tk.Toplevel):
 
         sf = ttk.LabelFrame(self, text="Footage")
         sf.pack(fill="both", expand=True, **pad)
+        if self._preset:
+            ttk.Radiobutton(sf, text=f"Selected in gallery ({len(self._preset)} clips)",
+                            value="selected", variable=self.v_scope,
+                            command=self._sync).pack(anchor="w", padx=8)
         ttk.Radiobutton(sf, text="All library footage", value="all",
                         variable=self.v_scope, command=self._sync).pack(anchor="w", padx=8)
         ttk.Radiobutton(sf, text="By source / tape:", value="sources",
@@ -410,7 +483,10 @@ class NewProjectDialog(tk.Toplevel):
                 pass
 
     def clips(self):
-        if self.v_scope.get() == "all":
+        scope = self.v_scope.get()
+        if scope == "selected" and self._preset:
+            return self._preset
+        if scope == "all":
             return "all"
         srcmap = engine.manifest_sources(
             os.path.join(self.media, "catalog", "manifest.csv"))
@@ -574,13 +650,14 @@ class App(tk.Tk):
         else:
             self.proj_label.config(text="Project: (none — library mode)")
 
-    def new_project_dialog(self) -> None:
+    def new_project_dialog(self, preset_clips=None) -> None:
         def created(name, track, clips):
             p = engine.new_project(engine.MEDIA, name, track, clips=clips)
             self._set_project(p)
             self.log.insert("end", f"[project] created '{name}' → {p.dir}\n")
             self.log.see("end")
-        NewProjectDialog(self, engine.MEDIA, self.track.get().strip(), on_ok=created)
+        NewProjectDialog(self, engine.MEDIA, self.track.get().strip(),
+                         on_ok=created, clips=preset_clips)
 
     def open_project_dialog(self) -> None:
         names = engine.list_projects(engine.MEDIA)

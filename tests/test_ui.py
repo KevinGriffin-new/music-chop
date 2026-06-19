@@ -234,6 +234,67 @@ def test_tk_new_project_dialog_builds(tmp_path):
         root.destroy()
 
 
+def test_tk_gallery_selection_and_apply(smoke_manifest):
+    pytest.importorskip("tkinter")
+    pytest.importorskip("PIL")
+    import tkinter as tk
+    import tkapp
+    try:
+        root = tk.Tk(); root.withdraw()
+    except tk.TclError:
+        pytest.skip("no display")
+    try:
+        applied = {}
+        g = tkapp.GalleryWindow(root, smoke_manifest,
+                                on_apply=lambda c: applied.update(clips=c))
+        for _ in range(80):                 # pump the chunked loader to completion
+            root.update()
+            if not g._queue:
+                break
+        assert g._cells, "no thumbnails loaded"
+        picks = sorted(g._cells)[:2]
+        for c in picks:
+            g.toggle(c)
+        assert g.selected == set(picks)
+        g.toggle(picks[0])                  # toggling again deselects
+        assert g.selected == {picks[1]}
+        g.select_all()
+        assert g.selected == set(g._cells)
+        g.clear_selection()
+        assert g.selected == set()
+        for c in picks:
+            g.toggle(c)
+        g._apply()                          # on_apply gets the sorted selection
+        assert applied["clips"] == sorted(picks)
+    finally:
+        root.destroy()
+
+
+def test_tk_new_project_dialog_preset_clips(tmp_path):
+    pytest.importorskip("tkinter")
+    import tkinter as tk
+    import tkapp
+    try:
+        root = tk.Tk(); root.withdraw()
+    except tk.TclError:
+        pytest.skip("no display")
+    try:
+        captured = {}
+        dlg = tkapp.NewProjectDialog(
+            root, str(tmp_path), "Song.mp3",
+            on_ok=lambda n, t, c: captured.update(name=n, track=t, clips=c),
+            clips=["/a.mp4", "/b.mp4"])
+        root.update_idletasks()
+        # a preset selection defaults to the 'selected' scope and returns as-is
+        assert dlg.clips() == ["/a.mp4", "/b.mp4"]
+        dlg.v_name.set("Gallery Cut")
+        dlg._ok()
+        assert captured == {"name": "Gallery Cut", "track": "Song.mp3",
+                            "clips": ["/a.mp4", "/b.mp4"]}
+    finally:
+        root.destroy()
+
+
 def test_tk_arrange_options_present():
     pytest.importorskip("tkinter")
     import tkapp
