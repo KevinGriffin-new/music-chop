@@ -106,8 +106,11 @@ def apply_irix_theme(widget) -> "ttk.Style":
     style.map("TButton",
               background=[("active", c["light"]), ("pressed", c["dark"])],
               relief=[("pressed", "sunken"), ("!pressed", "raised")])
-    style.configure("TRadiobutton", background=c["bg"], indicatorcolor=c["field"])
-    style.configure("TCheckbutton", background=c["bg"], indicatorcolor=c["field"])
+    # padding widens the clickable hit box (toggles felt too small to hit)
+    style.configure("TRadiobutton", background=c["bg"], indicatorcolor=c["field"],
+                    padding=(4, 3))
+    style.configure("TCheckbutton", background=c["bg"], indicatorcolor=c["field"],
+                    padding=(4, 3))
     style.map("TRadiobutton", background=[("active", c["light"])])
     style.map("TCheckbutton", background=[("active", c["light"])])
     style.configure("TEntry", fieldbackground=c["field"], borderwidth=2)
@@ -400,6 +403,9 @@ class ArrangeOptions(tk.Toplevel):
         self._sync()
         self.transient(master)
         self.grab_set()
+        self.bind("<Return>", lambda e: self._ok())     # Enter arranges
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.after(20, self.focus_force)
 
     def _sync(self) -> None:
         # beats-per-cut only applies to the 'beats' grid
@@ -442,28 +448,40 @@ class NewProjectDialog(tk.Toplevel):
         pad = dict(padx=8, pady=4)
         nf = ttk.Frame(self, padding=4); nf.pack(fill="x", **pad)
         ttk.Label(nf, text="Name:").pack(side="left")
-        ttk.Entry(nf, textvariable=self.v_name).pack(side="left", fill="x", expand=True, padx=6)
+        name_entry = ttk.Entry(nf, textvariable=self.v_name)
+        name_entry.pack(side="left", fill="x", expand=True, padx=6)
         tf = ttk.Frame(self, padding=4); tf.pack(fill="x", **pad)
         ttk.Label(tf, text="Track:").pack(side="left")
         ttk.Entry(tf, textvariable=self.v_track).pack(side="left", fill="x", expand=True, padx=6)
 
         sf = ttk.LabelFrame(self, text="Footage")
-        sf.pack(fill="both", expand=True, **pad)
+        sf.pack(fill="x", **pad)            # fill x only, so Create stays on screen
         if self._preset:
             ttk.Radiobutton(sf, text=f"Selected in gallery ({len(self._preset)} clips)",
                             value="selected", variable=self.v_scope,
-                            command=self._sync).pack(anchor="w", padx=8)
+                            command=self._sync).pack(anchor="w", fill="x", padx=8)
         ttk.Radiobutton(sf, text="All library footage", value="all",
-                        variable=self.v_scope, command=self._sync).pack(anchor="w", padx=8)
+                        variable=self.v_scope, command=self._sync).pack(anchor="w", fill="x", padx=8)
         ttk.Radiobutton(sf, text="By source / tape:", value="sources",
-                        variable=self.v_scope, command=self._sync).pack(anchor="w", padx=8)
-        self.srcbox = ttk.Frame(sf)
-        self.srcbox.pack(fill="x", padx=24)
+                        variable=self.v_scope, command=self._sync).pack(anchor="w", fill="x", padx=8)
+
+        # the source list can be long — scroll it in a capped-height canvas so
+        # the Create/Cancel buttons always stay visible
+        wrap = ttk.Frame(sf)
+        wrap.pack(fill="x", padx=24, pady=(0, 4))
+        cv = tk.Canvas(wrap, height=150, highlightthickness=0, bg=IRIX["bg"])
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        cv.pack(side="left", fill="x", expand=True)
+        self.srcbox = ttk.Frame(cv)
+        cv.create_window((0, 0), window=self.srcbox, anchor="nw")
+        self.srcbox.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
         for s in sorted(engine.manifest_sources(
                 os.path.join(media, "catalog", "manifest.csv"))):
             v = tk.BooleanVar()
             self._src_vars[s] = v
-            ttk.Checkbutton(self.srcbox, text=s, variable=v).pack(anchor="w")
+            ttk.Checkbutton(self.srcbox, text=s, variable=v).pack(anchor="w", fill="x")
         if not self._src_vars:
             ttk.Label(self.srcbox, text="(no catalog yet — add footage first)").pack(anchor="w")
 
@@ -473,6 +491,10 @@ class NewProjectDialog(tk.Toplevel):
         self._sync()
         self.transient(master)
         self.grab_set()
+        self.bind("<Return>", lambda e: self._ok())     # Enter creates
+        self.bind("<Escape>", lambda e: self.destroy())
+        name_entry.focus_set()
+        self.after(20, self.focus_force)                # win the first click (macOS)
 
     def _sync(self) -> None:
         state = "normal" if self.v_scope.get() == "sources" else "disabled"
