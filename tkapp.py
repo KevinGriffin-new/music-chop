@@ -535,6 +535,14 @@ class App(tk.Tk):
         self.title("dv2mv")
         apply_irix_theme(self)              # IRIX/4Dwm look for the ttk controls
         self.configure(bg=IRIX["bg"])
+        # window/app icon (kino-eye); defensive — never let a bad icon break launch
+        self._icon = None
+        try:
+            self._icon = tk.PhotoImage(
+                file=os.path.join(engine.HERE, "assets", "icons", "dv2mv-256.png"))
+            self.iconphoto(True, self._icon)
+        except Exception:
+            pass
         self.q: queue.Queue[engine.ProgressEvent] = queue.Queue()
         self._last_grid = None     # grid chosen in the options dialog; render reuses it
         self.project = None        # active Project (None => whole-library mode)

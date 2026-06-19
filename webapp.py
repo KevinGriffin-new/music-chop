@@ -53,6 +53,13 @@ CLIPS = os.path.join(MEDIA, "clips")
 os.makedirs(CATALOG, exist_ok=True)
 app.mount("/catalog-files", StaticFiles(directory=CATALOG), name="catalog")
 
+FAVICON = os.path.join(engine.HERE, "assets", "icons", "favicon.ico")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(FAVICON, media_type="image/x-icon")
+
 
 def _save_upload(upload: UploadFile, dest_dir: str, allowed: tuple) -> str:
     """Save an uploaded file into dest_dir under a sanitized basename."""
@@ -299,6 +306,7 @@ def api_create_project(name: str = Form(...), track: str = Form(...),
 
 # ── the world's smallest front end, to prove the loop ──────────────────────
 INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
+<link rel="icon" href="/favicon.ico">
 <body style="font:14px system-ui;max-width:680px;margin:2rem auto">
 <h1>dv2mv — web</h1>
 

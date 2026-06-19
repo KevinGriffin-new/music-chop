@@ -285,6 +285,18 @@ def test_web_create_project_from_explicit_clips(proj_client):
     assert r.status_code == 200 and r.json()["clips"] == 3
 
 
+def test_web_favicon_served_and_linked(client):
+    r = client.get("/favicon.ico")
+    assert r.status_code == 200 and r.content[:4] in (b"\x00\x00\x01\x00", b"\x89PNG")
+    assert 'rel="icon"' in client.get("/").text
+
+
+def test_icons_vendored():
+    icons = os.path.join(REPO, "assets", "icons")
+    assert os.path.exists(os.path.join(icons, "favicon.ico"))
+    assert os.path.exists(os.path.join(icons, "dv2mv-256.png"))
+
+
 def test_web_gallery_has_selection_layer(proj_client):
     client, _ = proj_client
     html = client.get("/api/gallery").text
