@@ -675,7 +675,8 @@ class App(tk.Tk):
     def _set_project(self, p) -> None:
         self.project = p
         if p:
-            self.proj_label.config(text=f"Project: {p.name}  ({p.clips if p.clips=='all' else str(len(p.clips))+' clips'})")
+            n = p.clips if p.clips == "all" else f"{len(p.clips)} clips"
+            self.proj_label.config(text=f"Project: {p.name} · {p.track} · {n}")
             self.track.delete(0, "end")
             self.track.insert(0, p.track)
         else:
@@ -719,6 +720,11 @@ class App(tk.Tk):
 
     def _arrange_project_flow(self) -> None:
         p = self.project
+        # the Track box is the source of truth — (re)point the project to it so
+        # Arrange uses the same track Analyze just used (not a stale stored one)
+        track = self.track.get().strip()
+        if track:
+            p.track = track
         stem = os.path.splitext(p.track)[0]
         analysis = os.path.join(engine.MEDIA, "catalog_audio", f"{stem}.analysis.json")
         if not os.path.exists(analysis):
@@ -730,7 +736,8 @@ class App(tk.Tk):
         def run(opts):
             for k, v in opts.items():
                 setattr(p, k, v)
-            p.save()
+            p.save()                              # persists the (re)pointed track + opts
+            self._set_project(p)                  # refresh the label's track
             self.status.config(text=f"arranging project '{p.name}' …")
             self._spawn(lambda: engine.arrange_project(p, engine.MEDIA))
         ArrangeOptions(self, on_ok=run, initial=p.arrange_opts())

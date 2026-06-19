@@ -224,8 +224,11 @@ def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
                 allow_reuse: bool = False, drop_blurry: float = 0.0,
                 clip_from: str = "middle", project: str = ""):
     if project:
-        # arrange within the project: save the chosen options, scope to its clips
+        # arrange within the project: (re)point it at the requested track (the
+        # box is the source of truth), save the chosen options, scope to clips
         p = engine.load_project(MEDIA, project)
+        if track:
+            p.track = track
         (p.grid, p.beats_per_cut, p.allow_reuse, p.drop_blurry, p.clip_from) = (
             grid, beats_per_cut, allow_reuse, drop_blurry, clip_from)
         p.save()

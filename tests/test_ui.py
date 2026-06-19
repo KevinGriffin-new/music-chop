@@ -277,6 +277,21 @@ def test_web_index_has_project_controls(client):
     assert "id=project" in html and "id=psources" in html and "createProject" in html
 
 
+def test_web_arrange_repoints_project_track(proj_client):
+    """A project bound to the wrong track arranges fine when the request carries
+    the right one — the track box wins and the project is re-pointed + saved."""
+    import json
+    import engine
+    client, media = proj_client
+    client.post("/api/projects", data={"name": "RP", "track": "Wrong.mp3"})
+    body = client.get("/api/arrange",
+                      params={"project": "RP", "track": "Song.mp3", "grid": "sections"}).text
+    done = [ln for ln in body.splitlines() if '"done": true' in ln][-1]
+    ev = json.loads(done.split("data: ", 1)[1])
+    assert ev.get("result", {}).get("summary", {}).get("track") == "Song"   # used Song
+    assert engine.load_project(media, "RP").track == "Song.mp3"             # re-pointed
+
+
 def test_web_create_project_from_explicit_clips(proj_client):
     client, _ = proj_client
     clips = ["/v/clips/a.mp4", "/v/clips/b.mp4", "/v/clips/c.mp4"]
