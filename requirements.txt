@@ -21,6 +21,8 @@ coverage>=7.14     # numba imports coverage.types.Tracer at load; older
 # ── web tier only ──
 fastapi
 uvicorn[standard]
+python-multipart   # required for file uploads (UploadFile / multipart forms)
 
 # ── dev / test ──
-pytest             # run: python3 -m pytest dv2mv/tests
+pytest             # run: python3 -m pytest tests
+httpx              # FastAPI TestClient (web upload tests)

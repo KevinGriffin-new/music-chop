@@ -133,6 +133,25 @@ def test_ingest_rejects_same_dir(tmp_path):
         drain(engine.ingest(str(tmp_path), str(tmp_path)))
 
 
+# ── pure: source resolution for file pickers / uploads ───────────────────────
+def test_list_sources_dir_file_and_list(tmp_path):
+    (tmp_path / "a.mp4").write_bytes(b"x")
+    (tmp_path / "b.mov").write_bytes(b"x")
+    (tmp_path / "note.txt").write_bytes(b"x")          # not a video
+    a, b = str(tmp_path / "a.mp4"), str(tmp_path / "b.mov")
+    assert engine._list_sources(str(tmp_path)) == [a, b]      # dir, sorted, video-only
+    assert engine._list_sources(a) == [a]                      # single file
+    assert engine._list_sources([b, a]) == [a, b]              # unsorted list -> sorted
+    assert engine._list_sources([str(tmp_path / "missing.mp4")]) == []  # nonexistent filtered
+    assert engine._list_sources([str(tmp_path / "note.txt")]) == []     # non-video filtered
+    assert engine._list_sources("/no/such/dir") == []
+
+
+def test_detect_empty_source_raises(tmp_path):
+    with pytest.raises(engine.StageError):
+        drain(engine.detect(str(tmp_path), str(tmp_path / "out")))   # empty dir
+
+
 # ── integration: ingest ──────────────────────────────────────────────────────
 @requires_ffmpeg
 def test_ingest_normalizes_and_is_idempotent(clips_dir, tmp_path):
@@ -162,6 +181,16 @@ def test_detect_splits_into_clips(clips_dir, tmp_path):
     final = evs[-1]
     assert final.done and final.result["clips"] >= 1
     assert os.path.isdir(final.result["clips_dir"])
+
+
+@requires_scenedetect
+def test_detect_accepts_picked_file_list(clips_dir, tmp_path):
+    """The file-picker / upload path: detect() fed explicit files, not a dir."""
+    out = str(tmp_path / "scenes")
+    first = sorted(os.path.join(clips_dir, f) for f in os.listdir(clips_dir)
+                   if f.endswith(".mp4"))[0]
+    evs = drain(engine.detect([first], out))
+    assert evs[-1].done and evs[-1].result["clips"] >= 1
 
 
 # ── integration: catalog ─────────────────────────────────────────────────────

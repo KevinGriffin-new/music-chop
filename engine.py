@@ -234,25 +234,43 @@ def ingest(
 
 
 # ── stage 1: detect (scene-split sources into a clip pile) ──────────────────
+def _list_sources(src) -> list[str]:
+    """Resolve `src` (a directory, a single file, or a list of files) to a
+    sorted list of existing video files. Lets file pickers/uploads feed
+    individual paths while the dir-based callers keep working unchanged.
+    """
+    if isinstance(src, (list, tuple)):
+        cand = [os.path.abspath(p) for p in src]
+    elif isinstance(src, str) and os.path.isdir(src):
+        cand = glob(os.path.join(src, "*"))
+    elif isinstance(src, str):
+        cand = [src]                       # a single file path
+    else:
+        cand = []
+    return sorted(p for p in cand
+                  if os.path.isfile(p) and p.lower().endswith(VIDEO_EXTS))
+
+
 def detect(
-    src_dir: str,
+    src,                                   # dir, single file, or list of files
     out_dir: str,
     threshold: float = 27.0,
     min_scene_len: str = "0.6s",
     rate_factor: int = 18,
     preset: str = "slow",
 ) -> Iterator[ProgressEvent]:
-    """Split every source video in src_dir into scene clips in out_dir.
+    """Split source video into scene clips in out_dir.
 
-    Mirrors fates-end-chop.sh but per-source, so we can emit real progress.
-    Skips sources already split (idempotent re-runs).
+    `src` may be a directory of sources, a single video file, or a list of
+    files (e.g. picked in a file dialog or uploaded). Mirrors fates-end-chop.sh
+    but per-source, so we can emit real progress. Skips sources already split
+    (idempotent re-runs).
     """
     st = "detect"
     os.makedirs(out_dir, exist_ok=True)
-    sources = sorted(
-        p for p in glob(os.path.join(src_dir, "*"))
-        if p.lower().endswith(VIDEO_EXTS)
-    )
+    sources = _list_sources(src)
+    if not sources:
+        raise StageError(f"detect: no source video found ({src!r})")
     # skip any source whose scene clips already exist
     todo = []
     for f in sources:
