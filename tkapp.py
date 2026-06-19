@@ -35,7 +35,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import engine
 
@@ -62,12 +62,21 @@ IRIX = {
     "fg":     "#000000",
     "field":  "#b6b6b6",   # entry / input field
 }
-# An SGI-like UI font. Install the real font (macOS: ~/Library/Fonts) and set
-# its family name here; falls back to a Motif-ish family until then.
-IRIX_FONT_FAMILY = "Helvetica"          # TODO: swap for the uploaded SGI font
-IRIX_FONT = (IRIX_FONT_FAMILY, 11)
+# The SGI screen font (CC0, vendored in assets/fonts/). Install it for the real
+# look (macOS: copy the .ttf into ~/Library/Fonts); we fall back to a crisp mono
+# family if it isn't available, so the app still runs anywhere.
+IRIX_FONT_FAMILY = "Irix Screen Mono 15"
+IRIX_FONT_FALLBACK = "Menlo"            # macOS mono; any mono works
+IRIX_FONT_SIZE = -15                    # negative = pixels (crisp for a bitmap font)
 
 GRIDS = ["sections", "downbeats", "beats", "harmonic"]
+
+
+def pick_irix_font(available) -> tuple:
+    """Choose the SGI font if installed, else a mono fallback. `available` is the
+    set of Tk font families (so this stays pure and testable)."""
+    fam = IRIX_FONT_FAMILY if IRIX_FONT_FAMILY in available else IRIX_FONT_FALLBACK
+    return (fam, IRIX_FONT_SIZE)
 
 
 def apply_irix_theme(widget) -> "ttk.Style":
@@ -82,8 +91,9 @@ def apply_irix_theme(widget) -> "ttk.Style":
     except tk.TclError:
         style.theme_use("classic")
     c = IRIX
+    font = pick_irix_font(set(tkfont.families(widget)))
     style.configure(".", background=c["bg"], foreground=c["fg"],
-                    font=IRIX_FONT, borderwidth=2)
+                    font=font, borderwidth=2)
     style.configure("TButton", background=c["bg"], relief="raised",
                     borderwidth=3, padding=4)
     style.map("TButton",
@@ -98,7 +108,7 @@ def apply_irix_theme(widget) -> "ttk.Style":
     style.configure("TLabel", background=c["bg"])
     style.configure("TFrame", background=c["bg"])
     style.configure("TLabelframe", background=c["bg"], borderwidth=2, relief="ridge")
-    style.configure("TLabelframe.Label", background=c["bg"], font=IRIX_FONT)
+    style.configure("TLabelframe.Label", background=c["bg"], font=font)
     style.map(".", background=[("selected", c["select"])],
               foreground=[("selected", "#ffffff")])
     return style

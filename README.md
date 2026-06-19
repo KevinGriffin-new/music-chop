@@ -63,7 +63,15 @@ pip install -r requirements.txt
 export DV2MV_MEDIA=/path/to/your/media
 python3 engine.py "album-audio/02 Erased.mp3" "$DV2MV_MEDIA/catalog_audio"  # smoke-test the core
 uvicorn webapp:app --reload    # web tier  → localhost:8000
-python3 tkapp.py               # offline tier
+python3 tkapp.py               # offline tier (IRIX/4Dwm look)
+```
+
+The Tk app's options dialog uses the SGI screen font for its IRIX look. It's
+vendored (CC0) in `assets/fonts/`; install it for the real look, else it falls
+back to a mono family:
+
+```bash
+cp assets/fonts/IrixScreenMono15*.ttf ~/Library/Fonts/    # macOS
 ```
 
 ## Test

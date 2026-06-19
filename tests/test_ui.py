@@ -16,6 +16,7 @@ pytest.importorskip("httpx")              # TestClient transport
 from fastapi.testclient import TestClient  # noqa: E402
 
 import webapp  # noqa: E402  (conftest puts the project root on sys.path)
+from conftest import REPO  # noqa: E402
 
 
 @pytest.fixture
@@ -195,9 +196,25 @@ def test_tk_irix_theme_helper():
     pytest.importorskip("tkinter")
     import tkapp
     assert callable(tkapp.apply_irix_theme)
-    # palette + a swappable SGI font hook the user can point at the uploaded font
     assert {"bg", "light", "dark", "select", "fg", "field"} <= set(tkapp.IRIX)
-    assert isinstance(tkapp.IRIX_FONT, tuple) and tkapp.IRIX_FONT[0]
+
+
+def test_pick_irix_font_uses_sgi_font_else_falls_back():
+    pytest.importorskip("tkinter")
+    import tkapp
+    # SGI font present -> use it
+    got = tkapp.pick_irix_font({"Irix Screen Mono 15", "Helvetica"})
+    assert got == ("Irix Screen Mono 15", tkapp.IRIX_FONT_SIZE)
+    # absent -> mono fallback, never crashes
+    fb = tkapp.pick_irix_font({"Helvetica"})
+    assert fb == (tkapp.IRIX_FONT_FALLBACK, tkapp.IRIX_FONT_SIZE)
+
+
+def test_irix_font_vendored_in_repo():
+    # the CC0 font ships with the project so the look is reproducible
+    fonts = os.path.join(REPO, "assets", "fonts")
+    assert os.path.exists(os.path.join(fonts, "IrixScreenMono15.ttf"))
+    assert os.path.exists(os.path.join(fonts, "license.txt"))
 
 
 # ── render resolves the suffixed arrange output (the uploaded-track chain) ────
