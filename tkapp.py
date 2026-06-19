@@ -35,7 +35,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import engine
 
@@ -48,6 +48,60 @@ AUDIO_TYPES = [("Audio", "*.mp3 *.wav *.m4a *.flac *.aac *.ogg *.aif *.aiff"),
                ("All files", "*.*")]
 VIDEO_TYPES = [("Video", "*.mp4 *.mov *.mkv *.m4v *.avi *.dv"),
                ("All files", "*.*")]
+
+# ── IRIX / 4Dwm-flavored theme (SGI gray scheme) ────────────────────────────
+# Tweakable to match a real IRIX look. We theme ttk widgets only (buttons/
+# radios/checks/entries in the options dialog), which on macOS is the only way
+# to escape native Aqua and get genuine beveled Motif/SGI controls. Plain tk
+# widgets (the progress Canvas, the green log Text) are left as-is.
+IRIX = {
+    "bg":     "#9a9a9a",   # SGI gray
+    "light":  "#cccccc",   # top/left bevel highlight
+    "dark":   "#4f4f4f",   # bottom/right bevel shadow
+    "select": "#27408b",   # SGI steel-blue selection
+    "fg":     "#000000",
+    "field":  "#b6b6b6",   # entry / input field
+}
+# An SGI-like UI font. Install the real font (macOS: ~/Library/Fonts) and set
+# its family name here; falls back to a Motif-ish family until then.
+IRIX_FONT_FAMILY = "Helvetica"          # TODO: swap for the uploaded SGI font
+IRIX_FONT = (IRIX_FONT_FAMILY, 11)
+
+GRIDS = ["sections", "downbeats", "beats", "harmonic"]
+
+
+def apply_irix_theme(widget) -> "ttk.Style":
+    """Style ttk widgets to read as IRIX 4Dwm (SGI gray, blocky bevels).
+
+    ttk styles are process-global; we don't touch the tk palette, so the main
+    window's plain-tk widgets are unaffected.
+    """
+    style = ttk.Style(widget)
+    try:
+        style.theme_use("alt")          # flat Motif bevels — closest to 4Dwm
+    except tk.TclError:
+        style.theme_use("classic")
+    c = IRIX
+    style.configure(".", background=c["bg"], foreground=c["fg"],
+                    font=IRIX_FONT, borderwidth=2)
+    style.configure("TButton", background=c["bg"], relief="raised",
+                    borderwidth=3, padding=4)
+    style.map("TButton",
+              background=[("active", c["light"]), ("pressed", c["dark"])],
+              relief=[("pressed", "sunken"), ("!pressed", "raised")])
+    style.configure("TRadiobutton", background=c["bg"], indicatorcolor=c["field"])
+    style.configure("TCheckbutton", background=c["bg"], indicatorcolor=c["field"])
+    style.map("TRadiobutton", background=[("active", c["light"])])
+    style.map("TCheckbutton", background=[("active", c["light"])])
+    style.configure("TEntry", fieldbackground=c["field"], borderwidth=2)
+    style.configure("TSpinbox", fieldbackground=c["field"], arrowsize=12)
+    style.configure("TLabel", background=c["bg"])
+    style.configure("TFrame", background=c["bg"])
+    style.configure("TLabelframe", background=c["bg"], borderwidth=2, relief="ridge")
+    style.configure("TLabelframe.Label", background=c["bg"], font=IRIX_FONT)
+    style.map(".", background=[("selected", c["select"])],
+              foreground=[("selected", "#ffffff")])
+    return style
 
 
 def gallery_thumb_path(manifest_path: str, thumb_rel: str) -> str:
@@ -166,12 +220,86 @@ class GalleryWindow(tk.Toplevel):
             self._bind_wheel(w)
 
 
+class ArrangeOptions(tk.Toplevel):
+    """IRIX-styled modal dialog for the arrange knobs.
+
+    Collects grid / beats-per-cut / allow-reuse / drop-blurry / clip-from, then
+    hands them to on_ok(params) — the App spawns engine.arrange(**params).
+    """
+    def __init__(self, master, on_ok, initial=None) -> None:
+        super().__init__(master)
+        self.title("Arrange options")
+        self.on_ok = on_ok
+        apply_irix_theme(self)
+        self.configure(bg=IRIX["bg"])
+        init = initial or {}
+        self.v_grid = tk.StringVar(value=init.get("grid", "sections"))
+        self.v_bpc = tk.IntVar(value=init.get("beats_per_cut", 4))
+        self.v_reuse = tk.BooleanVar(value=init.get("allow_reuse", False))
+        self.v_blur = tk.DoubleVar(value=init.get("drop_blurry", 0.0))
+        self.v_clip = tk.StringVar(value=init.get("clip_from", "middle"))
+
+        pad = dict(padx=8, pady=4)
+        gf = ttk.LabelFrame(self, text="Cut grid")
+        gf.pack(fill="x", **pad)
+        for g in GRIDS:
+            ttk.Radiobutton(gf, text=g, value=g, variable=self.v_grid,
+                            command=self._sync).pack(anchor="w", padx=8, pady=1)
+
+        bf = ttk.Frame(self)
+        bf.pack(fill="x", **pad)
+        ttk.Label(bf, text="Beats per cut:").pack(side="left")
+        self.sp_bpc = ttk.Spinbox(bf, from_=1, to=32, width=5, textvariable=self.v_bpc)
+        self.sp_bpc.pack(side="left", padx=6)
+
+        ttk.Checkbutton(self, text="Allow clip reuse",
+                        variable=self.v_reuse).pack(anchor="w", **pad)
+
+        df = ttk.Frame(self)
+        df.pack(fill="x", **pad)
+        ttk.Label(df, text="Drop blurry below:").pack(side="left")
+        ttk.Entry(df, width=7, textvariable=self.v_blur).pack(side="left", padx=6)
+
+        cf = ttk.LabelFrame(self, text="Clip piece from")
+        cf.pack(fill="x", **pad)
+        for v in ("middle", "start"):
+            ttk.Radiobutton(cf, text=v, value=v,
+                            variable=self.v_clip).pack(side="left", padx=8, pady=1)
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", **pad)
+        ttk.Button(bar, text="Arrange", command=self._ok).pack(side="right", padx=4)
+        ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right")
+
+        self._sync()
+        self.transient(master)
+        self.grab_set()
+
+    def _sync(self) -> None:
+        # beats-per-cut only applies to the 'beats' grid
+        self.sp_bpc.configure(state="normal" if self.v_grid.get() == "beats"
+                              else "disabled")
+
+    def params(self) -> dict:
+        return {"grid": self.v_grid.get(),
+                "beats_per_cut": int(self.v_bpc.get()),
+                "allow_reuse": bool(self.v_reuse.get()),
+                "drop_blurry": float(self.v_blur.get()),
+                "clip_from": self.v_clip.get()}
+
+    def _ok(self) -> None:
+        p = self.params()
+        self.destroy()
+        self.on_ok(p)
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("dv2mv")
         self.configure(bg=GREY)
         self.q: queue.Queue[engine.ProgressEvent] = queue.Queue()
+        self._last_grid = None     # grid chosen in the options dialog; render reuses it
 
         bevel = dict(bg=GREY, relief="raised", bd=2)
         tk.Label(self, text="dv2mv — offline", bg=GREY, font=("Helvetica", 13, "bold"),
@@ -280,15 +408,33 @@ class App(tk.Tk):
             self._spawn(lambda: engine.analyze(
                 os.path.join(media, "album-audio", track), cat))
         elif stage == "arrange":
-            self._spawn(lambda: engine.arrange(
-                os.path.join(cat, f"{stem}.analysis.json"),
-                os.path.join(media, "catalog", "manifest.csv"),
-                grid="beats", beats_per_cut=2, allow_reuse=True))
+            self._open_arrange_options(track, cat, media)
         else:
-            # arrange wrote render-<track>-<grid>.sh; resolve the newest match
-            sh = engine.find_render_script(cat, track) or os.path.join(
+            # prefer the script for the grid last arranged; else the newest match
+            sh = None
+            if self._last_grid:
+                cand = os.path.join(cat, f"render-{stem}{engine._tag_suffix(self._last_grid)}.sh")
+                sh = cand if os.path.exists(cand) else None
+            sh = sh or engine.find_render_script(cat, track) or os.path.join(
                 cat, f"render-{stem}.sh")
             self._spawn(lambda: engine.render(sh))
+
+    def _open_arrange_options(self, track: str, cat: str, media: str) -> None:
+        stem = os.path.splitext(track)[0]
+        analysis = os.path.join(cat, f"{stem}.analysis.json")
+        if not os.path.exists(analysis):
+            messagebox.showinfo(
+                "dv2mv — arrange",
+                f"No analysis for '{stem}' yet — run Analyze on the track first.")
+            return
+        manifest = os.path.join(media, "catalog", "manifest.csv")
+
+        def run(p):
+            self._last_grid = p["grid"]
+            self.status.config(text=f"arranging on the {p['grid']} grid …")
+            self._spawn(lambda: engine.arrange(analysis, manifest, **p))
+        ArrangeOptions(self, on_ok=run,
+                       initial={"grid": self._last_grid or "sections"})
 
     # ── file pickers: bring in new media from anywhere on disk ──────────────
     def add_track(self) -> None:

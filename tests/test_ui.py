@@ -179,6 +179,27 @@ def test_tk_gallery_window_and_button_present():
     assert hasattr(tkapp.App, "open_gallery")
 
 
+# ── Tk arrange options dialog (IRIX-themed) ──────────────────────────────────
+def test_tk_arrange_options_present():
+    pytest.importorskip("tkinter")
+    import tkapp
+    # all four grids are offered (the thing the user called out)
+    assert tkapp.GRIDS == ["sections", "downbeats", "beats", "harmonic"]
+    assert hasattr(tkapp, "ArrangeOptions")
+    for attr in ("params", "_ok", "_sync"):
+        assert hasattr(tkapp.ArrangeOptions, attr), attr
+    assert hasattr(tkapp.App, "_open_arrange_options")
+
+
+def test_tk_irix_theme_helper():
+    pytest.importorskip("tkinter")
+    import tkapp
+    assert callable(tkapp.apply_irix_theme)
+    # palette + a swappable SGI font hook the user can point at the uploaded font
+    assert {"bg", "light", "dark", "select", "fg", "field"} <= set(tkapp.IRIX)
+    assert isinstance(tkapp.IRIX_FONT, tuple) and tkapp.IRIX_FONT[0]
+
+
 # ── render resolves the suffixed arrange output (the uploaded-track chain) ────
 @pytest.fixture
 def render_client(tmp_path, monkeypatch):
