@@ -154,6 +154,14 @@ def main():
     app.geometry("+80+80")
     app.lift()
     app.focus_force()
+    # make dv2mv the macOS "key" app — a click on a non-key window's ttk button
+    # is swallowed (activates the window instead of pressing). Driving via the
+    # computer-use MCP confirmed clicks land once the app owns focus.
+    try:
+        from AppKit import NSApplication
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except Exception:
+        pass
     smoke = Smoke(app)
     smoke.run()
     app.mainloop()
