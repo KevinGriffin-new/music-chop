@@ -359,6 +359,40 @@ def test_arrange_builds_sidecars_with_tag(synth_analysis, smoke_manifest):
     assert os.stat(final["render_sh"]).st_mode & stat.S_IXUSR
 
 
+# ── pure: timeline-export prerequisites (source in-point recorded) ────────────
+def test_clip_in_point_middle_and_start():
+    from pipeline.sync_clips import clip_in_point
+    assert clip_in_point(10.0, 4.0, "middle") == 3.0   # centered: (10-4)/2
+    assert clip_in_point(4.0, 4.0, "middle") == 0.0    # exact fit
+    assert clip_in_point(3.0, 4.0, "middle") == 0.0    # never negative (clip < slot)
+    assert clip_in_point(10.0, 4.0, "start") == 0.0    # start always takes from 0
+
+
+def test_arrange_records_source_in_point_for_export(synth_analysis, smoke_manifest):
+    """The order CSV must carry each slot's source in-point + clip duration, and
+    arrange.json the timeline geometry + music path — everything a timeline
+    export needs to trim exactly, with no recompute."""
+    from pipeline.sync_clips import clip_in_point
+    final = engine.run_stage(
+        engine.arrange(synth_analysis, smoke_manifest, grid="sections",
+                       allow_reuse=True, clip_from="middle"),
+        lambda e: None)
+    with open(final["order"]) as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows, "no slots"
+    for r in rows:
+        ss, cdur, d = (float(r["clip_in_s"]), float(r["clip_src_dur_s"]),
+                       float(r["slot_dur_s"]))
+        assert ss >= 0.0
+        # the recorded in-point matches the helper the render uses, exactly
+        assert abs(ss - clip_in_point(cdur, d, "middle")) < 1e-6
+
+    import json
+    meta = json.load(open(final["options"]))
+    assert meta["timeline"] == {"fps": 30, "width": 720, "height": 480}
+    assert meta["music"] and meta["duration_s"]      # self-sufficient for export
+
+
 def test_arrange_missing_analysis_prompts_analyze(tmp_path, smoke_manifest):
     with pytest.raises(engine.StageError) as ei:
         drain(engine.arrange(str(tmp_path / "Ghost.analysis.json"), smoke_manifest))

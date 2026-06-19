@@ -38,6 +38,22 @@ import sys
 
 import numpy as np
 
+# Render geometry — the segments are normalized to this in render-*.sh, so a
+# timeline export (FCPXML/OTIO) must declare the same frame size + rate for the
+# trims to land on the same frames. Single source of truth for both writers.
+RENDER_W, RENDER_H, RENDER_FPS = 720, 480, 30
+
+
+def clip_in_point(clip_dur, slot_dur, clip_from):
+    """Source in-point (seconds): where in the source clip the slot-length piece
+    starts. 'middle' centers the piece (so we keep the clip's middle and trim the
+    ends evenly); 'start' takes from 0. Mirrors the render `-ss`, so a timeline
+    export trims to exactly the same frames the render would. Never negative —
+    a clip shorter than its slot is taken from the top."""
+    if clip_from == "middle":
+        return max(0.0, (clip_dur - slot_dur) / 2)
+    return 0.0
+
 
 def load_manifest(path):
     rows = []
@@ -142,15 +158,20 @@ def main():
     matchpct = 100 * (1 - np.mean([abs(cm_n[i] - tgt)
                                    for _, _, _, _, tgt, i in assignments]))
 
-    # 1) order csv
+    # 1) order csv — includes the source in-point + clip source duration so a
+    #    timeline export (FCPXML/OTIO) has exact trims without recomputing them.
     order_csv = os.path.join(out_dir, f"order-sync-{track}{sfx}.csv")
     with open(order_csv, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["slot", "song_start_s", "song_end_s", "slot_dur_s",
-                    "target_energy", "clip_motion_norm", "clip"])
+                    "target_energy", "clip_motion_norm", "clip",
+                    "clip_in_s", "clip_src_dur_s"])
         for si, a, b, d, tgt, i in assignments:
+            cdur = clips[i]["duration_s"]
+            ss = clip_in_point(cdur, d, args.clip_from)
             w.writerow([si, round(a, 3), round(b, 3), round(d, 3),
-                        round(tgt, 3), round(float(cm_n[i]), 3), clips[i]["clip"]])
+                        round(tgt, 3), round(float(cm_n[i]), 3), clips[i]["clip"],
+                        round(ss, 3), round(cdur, 3)])
 
     # 2) Audacity label track  (start \t end \t label)
     labels = os.path.join(out_dir, f"{track}{sfx}.labels.txt")
@@ -186,13 +207,13 @@ def main():
         for seg, (si, a, b, d, tgt, i) in enumerate(assignments):
             clip = clips[i]["clip"].replace('"', '\\"')
             cdur = clips[i]["duration_s"]
-            ss = max(0.0, (cdur - d) / 2) if args.clip_from == "middle" else 0.0
+            ss = clip_in_point(cdur, d, args.clip_from)
             # progress marker the engine parses as [done/total] for a real bar
             fh.write(f'echo "[{seg + 1}/{ntotal}] segment {seg + 1}/{nseg}"\n')
             fh.write(
                 f'ffmpeg -nostdin -loglevel error -ss {ss:.3f} -i "{clip}" -t {d:.3f} '
-                f'-vf "scale=720:480:force_original_aspect_ratio=decrease,'
-                f'pad=720:480:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" '
+                f'-vf "scale={RENDER_W}:{RENDER_H}:force_original_aspect_ratio=decrease,'
+                f'pad={RENDER_W}:{RENDER_H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={RENDER_FPS}" '
                 f'-an -c:v libx264 -crf 18 -preset fast "$TMP/{seg:04d}.mp4"\n')
         fh.write(f'echo "[{nseg + 1}/{ntotal}] concatenating segments"\n')
         fh.write('for f in "$TMP"/*.mp4; do echo "file \'$f\'"; done > "$TMP/list.txt"\n')
@@ -218,12 +239,17 @@ def main():
         "clip_from": args.clip_from,
         "analysis": os.path.abspath(args.analysis),
         "manifest": os.path.abspath(args.manifest),
+        "music": an.get("path"),                 # the audio laid under the cut
+        "duration_s": an.get("duration_s"),      # song length = timeline length
         "tempo_bpm": an.get("tempo_bpm"),
         "key": an.get("key"),
         "cuts": len(assignments),
         "slots": len(slots),
         "clips": len(clips),
         "energy_match_pct": round(float(matchpct), 1),
+        # timeline geometry the render normalizes to — an editable-timeline
+        # export must match it so the trims land on the same frames.
+        "timeline": {"fps": RENDER_FPS, "width": RENDER_W, "height": RENDER_H},
         "outputs": {
             "order": os.path.basename(order_csv),
             "labels": os.path.basename(labels),
