@@ -95,6 +95,9 @@ def main():
     ap.add_argument("--out", default="",
                     help="output directory (default: the analysis file's dir); "
                          "lets a project own its arrangement outputs")
+    ap.add_argument("--cut-dir", default="",
+                    help="directory for the final cut-*.mp4 (default: --out dir); "
+                         "lets library cuts collect in one folder")
     args = ap.parse_args()
 
     with open(args.analysis) as fh:
@@ -131,6 +134,7 @@ def main():
 
     out_dir = os.path.abspath(args.out) if args.out else os.path.dirname(os.path.abspath(args.analysis))
     os.makedirs(out_dir, exist_ok=True)
+    cut_dir = os.path.abspath(args.cut_dir) if args.cut_dir else out_dir
     track = an["track"]
     # optional tag suffix so different grids don't clobber each other's sidecars
     tag = re.sub(r"[^A-Za-z0-9._-]+", "-", args.tag).strip("-")
@@ -164,6 +168,7 @@ def main():
 
     # 4) ffmpeg render script: trim each clip to its slot, concat, add music
     render = os.path.join(out_dir, f"render-{track}{sfx}.sh")
+    cut_path = os.path.join(cut_dir, f"cut-{track}{sfx}.mp4")
     nseg = len(assignments)
     # one segment + concat + mux -> total progress steps the engine can parse
     ntotal = nseg + 2
@@ -194,9 +199,10 @@ def main():
         fh.write('ffmpeg -nostdin -loglevel error -f concat -safe 0 -i "$TMP/list.txt" '
                  '-c copy "$TMP/video.mp4"\n')
         fh.write(f'echo "[{ntotal}/{ntotal}] muxing audio"\n')
+        fh.write(f'mkdir -p "{cut_dir}"\n')
         fh.write(f'ffmpeg -nostdin -loglevel error -i "$TMP/video.mp4" -i "$MUSIC" '
-                 f'-map 0:v -map 1:a -c:v copy -c:a aac -shortest "./cut-{track}{sfx}.mp4"\n')
-        fh.write(f'echo "wrote ./cut-{track}{sfx}.mp4"\nrm -rf "$TMP"\n')
+                 f'-map 0:v -map 1:a -c:v copy -c:a aac -shortest "{cut_path}"\n')
+        fh.write(f'echo "wrote {cut_path}"\nrm -rf "$TMP"\n')
     os.chmod(render, 0o755)
 
     # 5) arrange metadata — the options + stats that produced this cut, so an
@@ -224,6 +230,7 @@ def main():
             "markers": os.path.basename(markers),
             "render_sh": os.path.basename(render),
             "cut": f"cut-{track}{sfx}.mp4",
+            "cut_path": cut_path,
         },
     }
     with open(arrange_json, "w") as fh:
@@ -237,7 +244,7 @@ def main():
     print(f"  labels:  {labels}   (Audacity: File > Import > Labels)")
     print(f"  markers: {markers}")
     print(f"  options: {arrange_json}")
-    print(f"  render:  bash {render}   ->  cut-{track}{sfx}.mp4")
+    print(f"  render:  bash {render}   ->  {cut_path}")
 
 
 if __name__ == "__main__":

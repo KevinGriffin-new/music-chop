@@ -312,12 +312,15 @@ def test_render_produces_video_with_real_progress(clips_dir, tiny_wav, tmp_path)
     engine.run_stage(engine.catalog(clips_dir, cat, frames=4, width=120), lambda e: None)
     manifest = os.path.join(cat, "manifest.csv")
     analysis = write_analysis(str(tmp_path), tiny_wav, track="synthsong", duration=4.0)
+    cuts = str(tmp_path / "cuts")
     arr = engine.run_stage(
-        engine.arrange(analysis, manifest, grid="sections", allow_reuse=True),
+        engine.arrange(analysis, manifest, grid="sections", allow_reuse=True, cut_dir=cuts),
         lambda e: None)
     evs = drain(engine.render(arr["render_sh"]))
     final = evs[-1]
     assert final.done and os.path.exists(final.result["video"])
+    # cut_dir routed the mp4 to the cuts folder (not the sidecar dir)
+    assert os.path.dirname(final.result["video"]) == cuts
     # the completion event prints the absolute output path (so the UIs surface it)
     assert final.result["video"] in final.message and "Render complete" in final.message
     # the per-segment echoes give a real (non-None) advancing fraction

@@ -5,9 +5,6 @@ the **bug tracker** (https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv), which
 is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
 ## Next
-- **Library-mode cuts → a dedicated `cuts/` folder** instead of `catalog_audio/`
-  (output discoverability; the other half of the render-path work). Projects
-  already isolate their cut under `projects/<name>/`.
 - **Gallery-based clip selection in the web tier.** The web project create form
   scopes by source/tape; the Tk gallery already does multi-select — bring that
   to the web `/api/gallery`.

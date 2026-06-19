@@ -424,7 +424,8 @@ def arrange(
     drop_blurry: float = 0.0,
     clip_from: str = "middle",         # middle | start
     tag: Optional[str] = None,         # output suffix; defaults to the grid name
-    out_dir: Optional[str] = None,     # where outputs land; default = analysis dir
+    out_dir: Optional[str] = None,     # where sidecars land; default = analysis dir
+    cut_dir: Optional[str] = None,     # where the final cut-*.mp4 lands; default = out_dir
 ) -> Iterator[ProgressEvent]:
     """Build the cut: order-sync csv, labels, markers, and render-<track>.sh.
 
@@ -456,6 +457,8 @@ def arrange(
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         cmd += ["--out", out_dir]
+    if cut_dir:
+        cmd += ["--cut-dir", cut_dir]
     if allow_reuse:
         cmd.append("--allow-reuse")
     yield ProgressEvent(st, f"syncing clips on the {grid} grid …", None)
@@ -500,7 +503,9 @@ def render(render_sh: str) -> Iterator[ProgressEvent]:
             f"(missing {os.path.basename(render_sh)}).")
     cwd = os.path.dirname(os.path.abspath(render_sh))
     track = os.path.basename(render_sh).replace("render-", "").replace(".sh", "")
-    video = os.path.join(cwd, f"cut-{track}.mp4")
+    # the script writes the cut wherever arrange put it (e.g. a cuts/ folder) and
+    # echoes "wrote <path>"; capture that rather than assuming the location.
+    video = None
     yield ProgressEvent(st, "rendering — this is the slow one …", None)
     tail = []
     for line in _stream(["bash", render_sh], cwd=cwd):
@@ -508,10 +513,14 @@ def render(render_sh: str) -> Iterator[ProgressEvent]:
         if not line:
             continue
         tail = (tail + [line])[-25:]
+        if line.startswith("wrote "):
+            video = line[len("wrote "):].strip()
         # arrange() emits "[seg/total]" per segment so the bar is real, not a spinner.
         m = _IOFN.search(line)
         frac = (int(m.group(1)) / int(m.group(2))) if m else None
         yield ProgressEvent(st, line, frac)
+    if not video:                       # fallback for older scripts
+        video = os.path.join(cwd, f"cut-{track}.mp4")
     _require(st, {"video": video}, tail)
     yield ProgressEvent(st, f"Render complete → {video}", 1.0, True, {"video": video})
 

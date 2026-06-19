@@ -25,11 +25,12 @@ errors.
 | analyze | `catalog_audio/<track>.analysis.json` (+ merges `tracks_summary.csv`) |
 | catalog | `catalog/manifest.csv`, `catalog/histograms.npz`, `catalog/thumbs/` |
 | arrange | `order-sync-…csv`, `…labels.txt`, `…markers.csv`, `render-…sh`, `<track>…arrange.json` |
-| render  | `cut-<track>….mp4` (printed on completion: "Render complete → …") |
+| render  | `cuts/cut-<track>….mp4` (printed on completion: "Render complete → …") |
 | project | everything above for that project under `projects/<name>/` |
 
-Media lives under `DV2MV_MEDIA`; in **library mode** arrange/render outputs land
-in `catalog_audio/`, in **project mode** under `projects/<name>/`.
+Media lives under `DV2MV_MEDIA`. In **library mode** the sidecars land in
+`catalog_audio/` and the finished cut in `cuts/`; in **project mode** everything
+is under `projects/<name>/`.
 
 ## Ticket template
 

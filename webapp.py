@@ -176,7 +176,8 @@ def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
                             f"{os.path.splitext(track)[0]}.analysis.json")
     return _sse(engine.arrange(analysis, MANIFEST, grid=grid,
                                beats_per_cut=beats_per_cut, allow_reuse=allow_reuse,
-                               drop_blurry=drop_blurry, clip_from=clip_from))
+                               drop_blurry=drop_blurry, clip_from=clip_from,
+                               cut_dir=os.path.join(MEDIA, "cuts")))
 
 
 @app.get("/api/render")

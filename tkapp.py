@@ -737,10 +737,11 @@ class App(tk.Tk):
             return
         manifest = os.path.join(media, "catalog", "manifest.csv")
 
+        cuts = os.path.join(media, "cuts")
         def run(p):
             self._last_grid = p["grid"]
             self.status.config(text=f"arranging on the {p['grid']} grid …")
-            self._spawn(lambda: engine.arrange(analysis, manifest, **p))
+            self._spawn(lambda: engine.arrange(analysis, manifest, cut_dir=cuts, **p))
         ArrangeOptions(self, on_ok=run,
                        initial={"grid": self._last_grid or "sections"})
 
