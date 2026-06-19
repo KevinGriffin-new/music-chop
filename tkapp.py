@@ -177,8 +177,10 @@ class App(tk.Tk):
                 os.path.join(media, "catalog", "manifest.csv"),
                 grid="beats", beats_per_cut=2, allow_reuse=True))
         else:
-            self._spawn(lambda: engine.render(
-                os.path.join(cat, f"render-{stem}.sh")))
+            # arrange wrote render-<track>-<grid>.sh; resolve the newest match
+            sh = engine.find_render_script(cat, track) or os.path.join(
+                cat, f"render-{stem}.sh")
+            self._spawn(lambda: engine.render(sh))
 
     # ── file pickers: bring in new media from anywhere on disk ──────────────
     def add_track(self) -> None:

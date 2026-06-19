@@ -153,3 +153,34 @@ def test_tkapp_has_progress_and_prompt_machinery():
     import tkapp
     for attr in ("_pb_tick", "_begin", "_end"):
         assert hasattr(tkapp.App, attr), attr
+
+
+# ── render resolves the suffixed arrange output (the uploaded-track chain) ────
+@pytest.fixture
+def render_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "CATALOG_AUDIO", str(tmp_path / "catalog_audio"))
+    os.makedirs(webapp.CATALOG_AUDIO, exist_ok=True)
+    return TestClient(webapp.app)
+
+
+def test_render_without_arrange_streams_prompt(render_client):
+    body = render_client.get("/api/render", params={"track": "Ghost.mp3"}).text
+    assert ("error" in body) and "Arrange" in body
+
+
+def test_render_finds_suffixed_script_and_completes(render_client):
+    # a fake render-<track>-beats.sh (no ffmpeg): echo a progress marker and
+    # create the cut the engine verifies. Exercises the suffix resolution.
+    cat = webapp.CATALOG_AUDIO
+    script = os.path.join(cat, "render-My Song-beats.sh")
+    with open(script, "w") as fh:
+        fh.write('#!/usr/bin/env bash\nset -e\n'
+                 'echo "[1/1] fake segment"\n'
+                 ': > "cut-My Song-beats.mp4"\n')
+    os.chmod(script, 0o755)
+    body = render_client.get("/api/render", params={"track": "My Song.mp3"}).text
+    assert '"done": true' in body
+    assert "error" not in body
+    assert os.path.exists(os.path.join(cat, "cut-My Song-beats.mp4"))
+    # the done event hands back the cut path for the <video> to play via /api/clip
+    assert "cut-My Song-beats.mp4" in body

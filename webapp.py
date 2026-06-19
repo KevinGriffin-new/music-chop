@@ -170,14 +170,21 @@ def api_arrange(track: str, grid: str = "beats", beats_per_cut: int = 2,
 
 @app.get("/api/render")
 def api_render(track: str):
-    sh = os.path.join(CATALOG_AUDIO, f"render-{os.path.splitext(track)[0]}.sh")
+    # arrange wrote render-<track>-<grid>.sh; resolve the newest one rather than
+    # guessing the suffix, so Render works for whatever track was arranged.
+    sh = engine.find_render_script(CATALOG_AUDIO, track)
+    if not sh:
+        stem = os.path.splitext(os.path.basename(track))[0]
+        def need_arrange():
+            raise engine.StageError(
+                f"No render script for '{stem}' yet — run Arrange first.")
+            yield  # noqa: unreachable — makes this a generator for _sse
+        return _sse(need_arrange())
     return _sse(engine.render(sh))
 
-
-@app.get("/api/video")
-def api_video(track: str):
-    mp4 = os.path.join(MEDIA, f"cut-{os.path.splitext(track)[0]}.mp4")
-    return FileResponse(mp4, media_type="video/mp4")
+# The finished cut lives under CATALOG_AUDIO (inside MEDIA); the page plays it
+# via /api/clip using the absolute path from render's result, so there's no
+# separate video endpoint to keep in sync with the grid suffix.
 
 
 # ── the world's smallest front end, to prove the loop ──────────────────────
@@ -230,9 +237,10 @@ function stream(url, stage, track){
     log(`[${ev.stage}] ${ev.message}`);
     if (ev.done){
       es.close(); idle();
-      if (stage === 'render'){
+      if (stage === 'render' && ev.result && ev.result.video){
         const v = document.getElementById('vid');
-        v.src = `/api/video?track=${track}`; v.style.display = 'block';
+        v.src = '/api/clip?path=' + encodeURIComponent(ev.result.video);
+        v.style.display = 'block';
       }
     }
   };

@@ -391,6 +391,19 @@ def _tag_suffix(tag: str) -> str:
     return f"-{t}" if t else ""
 
 
+def find_render_script(out_dir: str, track: str) -> Optional[str]:
+    """Resolve a track name to the render script arrange() actually wrote.
+
+    arrange() suffixes outputs by grid/tag (render-<track>-<tag>.sh), but the
+    UIs only know the track. Return the newest matching script (so 'Render'
+    targets the most recent arrangement), or None if the track hasn't been
+    arranged yet. Handles a track passed with or without its audio extension.
+    """
+    stem = os.path.splitext(os.path.basename(track))[0]
+    cands = glob(os.path.join(out_dir, f"render-{stem}*.sh"))
+    return max(cands, key=os.path.getmtime) if cands else None
+
+
 def arrange(
     analysis_json: str,
     manifest: str,

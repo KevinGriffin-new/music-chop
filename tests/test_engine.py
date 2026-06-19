@@ -257,6 +257,22 @@ def test_render_missing_script_prompts_arrange(tmp_path):
     assert "Arrange" in str(ei.value)
 
 
+def test_find_render_script_resolves_suffixed_newest(tmp_path):
+    import time
+    d = str(tmp_path)
+    assert engine.find_render_script(d, "02 Erased.mp3") is None       # none yet
+    older = tmp_path / "render-02 Erased-sections.sh"
+    older.write_text("#!/bin/bash\n")
+    time.sleep(0.02)
+    newer = tmp_path / "render-02 Erased-beats.sh"
+    newer.write_text("#!/bin/bash\n")
+    # track given with OR without extension resolves to the newest match
+    assert engine.find_render_script(d, "02 Erased.mp3") == str(newer)
+    assert engine.find_render_script(d, "02 Erased") == str(newer)
+    # a different track doesn't match
+    assert engine.find_render_script(d, "Other.mp3") is None
+
+
 def test_arrange_different_grids_do_not_clobber(synth_analysis, smoke_manifest):
     r1 = engine.run_stage(engine.arrange(synth_analysis, smoke_manifest, grid="sections"),
                           lambda e: None)
