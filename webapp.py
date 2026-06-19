@@ -242,6 +242,8 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
   background:#eef3ff;border:1px solid #cdd9f0;border-radius:6px;font-size:13px"></div>
 <pre id=log style="background:#eee;padding:1rem;height:160px;overflow:auto"></pre>
 <video id=vid controls style="width:100%;display:none"></video>
+<div id=vidpath style="display:none;margin:.4rem 0;font:12px ui-monospace,monospace;
+  color:#444;word-break:break-all"></div>
 <script>
 const log = m => document.getElementById('log').textContent += m + "\\n";
 const bar = () => document.getElementById('bar');
@@ -279,6 +281,9 @@ function stream(url, stage, track){
         const v = document.getElementById('vid');
         v.src = '/api/clip?path=' + encodeURIComponent(ev.result.video);
         v.style.display = 'block';
+        const vp = document.getElementById('vidpath');
+        vp.textContent = '✓ wrote ' + ev.result.video;
+        vp.style.display = 'block';
       }
     }
   };

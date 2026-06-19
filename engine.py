@@ -505,7 +505,7 @@ def render(render_sh: str) -> Iterator[ProgressEvent]:
         frac = (int(m.group(1)) / int(m.group(2))) if m else None
         yield ProgressEvent(st, line, frac)
     _require(st, {"video": video}, tail)
-    yield ProgressEvent(st, "Render complete.", 1.0, True, {"video": video})
+    yield ProgressEvent(st, f"Render complete → {video}", 1.0, True, {"video": video})
 
 
 # ── projects ────────────────────────────────────────────────────────────────

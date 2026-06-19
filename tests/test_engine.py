@@ -316,6 +316,8 @@ def test_render_produces_video_with_real_progress(clips_dir, tiny_wav, tmp_path)
     evs = drain(engine.render(arr["render_sh"]))
     final = evs[-1]
     assert final.done and os.path.exists(final.result["video"])
+    # the completion event prints the absolute output path (so the UIs surface it)
+    assert final.result["video"] in final.message and "Render complete" in final.message
     # the per-segment echoes give a real (non-None) advancing fraction
     fracs = [e.frac for e in evs if e.frac is not None]
     assert fracs and max(fracs) == pytest.approx(1.0)
