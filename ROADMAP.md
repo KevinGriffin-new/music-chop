@@ -7,6 +7,23 @@ is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 ## Next
 - **Cancellation** of a running stage (both tiers) — stop a long render/analyze.
 
+## Bigger features
+- **Export an editable timeline → DaVinci Resolve.** Instead of (or alongside)
+  the ffmpeg render, emit an interchange timeline so the cut can be finished in
+  Resolve (color, audio, transitions, delivery). dv2mv decides the *cut*; Resolve
+  *finishes*. New `export` stage reading the order-sync data: one video track of
+  the slot clips + one audio track (the music). NOTE: `.drp` is Resolve's
+  proprietary archive — no good writer; target **FCPXML / OTIO / EDL** that
+  Resolve imports (OpenTimelineIO is the maintained Python lib; or hand-emit
+  FCPXML to stay dep-light). Small prerequisite: record each slot's source
+  in-point in the arrange output (the `ss` offset the render script computes),
+  so the timeline trims are exact.
+- **Compare timing schemes by energy match.** Arrange a track across multiple
+  grids (sections/downbeats/beats/harmonic) and show their energy-match % (and
+  cuts/clips) side by side, so you can pick the scheme that best fits the
+  track's energy. Builds on the per-grid variants + the `arrange.json`
+  provenance already written per arrangement.
+
 ## Later
 - **Incremental catalog** — "Add footage" should feature-extract only the *new*
   clips and append to the manifest, instead of re-cataloging the whole library.
