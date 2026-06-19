@@ -287,6 +287,12 @@ def api_sources():
     return {"sources": {k: len(v) for k, v in engine.manifest_sources(MANIFEST).items()}}
 
 
+@app.get("/api/tracks")
+def api_tracks():
+    """Audio tracks present in album-audio/, for the track dropdown."""
+    return {"tracks": engine.list_audio_tracks(MEDIA)}
+
+
 @app.post("/api/projects")
 def api_create_project(name: str = Form(...), track: str = Form(...),
                        sources: List[str] = Form(default=[]),
@@ -354,7 +360,9 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 </div>
 </fieldset>
 
-<input id=track value="02 Erased.mp3" style="width:60%">
+<input id=track value="02 Erased.mp3" list=tracklist style="width:60%"
+  placeholder="track filename (pick or type)">
+<datalist id=tracklist></datalist>
 <button onclick="go('analyze')">Analyze</button>
 <button onclick="go('arrange')">Arrange</button>
 <button onclick="go('render')">Render</button>
@@ -469,6 +477,14 @@ async function loadSources(){
   }
 }
 
+async function loadTracks(){
+  const j = await (await fetch('/api/tracks')).json();
+  const dl = $('tracklist'); dl.innerHTML = '';
+  for (const t of j.tracks){
+    const o = document.createElement('option'); o.value = t; dl.appendChild(o);
+  }
+}
+
 function selectProject(){
   activeProject = $('project').value;
   if (activeProject){
@@ -505,6 +521,7 @@ function go(stage){
 syncGrid();
 loadProjects();
 loadSources();
+loadTracks();
 
 async function uploadTrack(){
   const f = document.getElementById('trackfile').files[0];
@@ -515,6 +532,7 @@ async function uploadTrack(){
   if (!r.ok){ log('upload failed: ' + (await r.text())); return; }
   const j = await r.json();
   document.getElementById('track').value = j.track;
+  loadTracks();                          // surface the new track in the dropdown
   log('added track: ' + j.track + ' — click Analyze');
 }
 

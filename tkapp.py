@@ -453,7 +453,10 @@ class NewProjectDialog(tk.Toplevel):
         name_entry.pack(side="left", fill="x", expand=True, padx=6)
         tf = ttk.Frame(self, padding=4); tf.pack(fill="x", **pad)
         ttk.Label(tf, text="Track:").pack(side="left")
-        ttk.Entry(tf, textvariable=self.v_track).pack(side="left", fill="x", expand=True, padx=6)
+        # dropdown of the tracks actually present (still editable for odd cases)
+        tracks = engine.list_audio_tracks(media)
+        ttk.Combobox(tf, textvariable=self.v_track, values=tracks).pack(
+            side="left", fill="x", expand=True, padx=6)
 
         sf = ttk.LabelFrame(self, text="Footage")
         sf.pack(fill="x", **pad)            # fill x only, so Create stays on screen

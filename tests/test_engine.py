@@ -374,6 +374,15 @@ def test_manifest_sources(smoke_manifest):
     assert src and all(isinstance(v, list) and v for v in src.values())
 
 
+def test_list_audio_tracks(tmp_path):
+    aa = tmp_path / "album-audio"
+    aa.mkdir()
+    for name in ("02 Erased.mp3", "05 Of Ash.m4a", "cover.jpg", "notes.txt"):
+        (aa / name).write_bytes(b"")
+    assert engine.list_audio_tracks(str(tmp_path)) == ["02 Erased.mp3", "05 Of Ash.m4a"]
+    assert engine.list_audio_tracks(str(tmp_path / "nope")) == []   # no album-audio
+
+
 def test_arrange_project_outputs_into_project_dir(tmp_path, smoke_manifest):
     import shutil
     media = tmp_path / "media"

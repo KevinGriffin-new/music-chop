@@ -277,6 +277,17 @@ def test_web_index_has_project_controls(client):
     assert "id=project" in html and "id=psources" in html and "createProject" in html
 
 
+def test_web_tracks_endpoint_and_datalist(proj_client, tmp_path):
+    client, media = proj_client
+    os.makedirs(os.path.join(media, "album-audio"), exist_ok=True)
+    for name in ("02 Erased.mp3", "05 Of Ash.m4a", "notes.txt"):
+        open(os.path.join(media, "album-audio", name), "w").close()
+    tracks = client.get("/api/tracks").json()["tracks"]
+    assert tracks == ["02 Erased.mp3", "05 Of Ash.m4a"]      # audio only, sorted
+    html = client.get("/").text
+    assert "list=tracklist" in html and 'id=tracklist' in html and "loadTracks" in html
+
+
 def test_web_arrange_repoints_project_track(proj_client):
     """A project bound to the wrong track arranges fine when the request carries
     the right one — the track box wins and the project is re-pointed + saved."""

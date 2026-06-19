@@ -602,6 +602,17 @@ def load_project(media: str, name: str) -> Project:
     return Project.load(os.path.join(projects_root(media), _safe_name(name), "project.json"))
 
 
+AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".aif", ".aiff", ".wma")
+
+
+def list_audio_tracks(media: str) -> list[str]:
+    """Audio filenames in <media>/album-audio (the pickable tracks). Sorted."""
+    d = os.path.join(media, "album-audio")
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d) if f.lower().endswith(AUDIO_EXTS))
+
+
 def manifest_sources(library_manifest: str) -> dict:
     """Map each source/tape -> [clip paths] from the library manifest, for the
     selection UI. Empty dict if the manifest is absent."""
