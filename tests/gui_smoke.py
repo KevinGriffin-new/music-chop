@@ -80,7 +80,18 @@ class Smoke:
         self.passed = False
 
     def run(self):
-        self.app.after(1200, self._click_new)        # let the window map first
+        self.app.after(1200, self._activate)          # let the window map first
+
+    def _activate(self):
+        # macOS: clicking a background window only ACTIVATES it (Tk doesn't
+        # click-through), so a throwaway click on the banner brings it forward
+        # before the real button click lands.
+        self.app.lift()
+        self.app.focus_force()
+        self.app.update_idletasks()
+        print(f"· activate window @ {self.app.winfo_rootx() + 12},{self.app.winfo_rooty() + 12}")
+        pyautogui.click(self.app.winfo_rootx() + 12, self.app.winfo_rooty() + 12)
+        self.app.after(500, self._click_new)
 
     def _click_new(self):
         btn = find_widget(self.app, ttk.Button, "New")
@@ -89,7 +100,7 @@ class Smoke:
         x, y = center(btn)
         print(f"· click New… @ {x},{y}")
         pyautogui.click(x, y)
-        self.app.after(1000, self._fill_and_create)
+        self.app.after(1200, self._fill_and_create)
 
     def _fill_and_create(self):
         dlg = next((w for w in self.app.winfo_children()
