@@ -653,14 +653,19 @@ def arrange_project(project: Project, media: str) -> Iterator[ProgressEvent]:
     library = os.path.join(media, "catalog", "manifest.csv")
     manifest = write_scoped_manifest(
         library, project.clips, os.path.join(project.dir, "manifest-scope.csv"))
-    yield from arrange(analysis, manifest, out_dir=project.dir, tag="",
+    # tag by grid so trying different sync schemes accumulates side-by-side
+    # variants in the project folder (render-<track>-<grid>.sh / cut-…-<grid>.mp4)
+    # to compare, rather than overwriting one cut.
+    yield from arrange(analysis, manifest, out_dir=project.dir, tag=project.grid,
                        **project.arrange_opts())
 
 
 def render_project(project: Project) -> Iterator[ProgressEvent]:
-    """Render the project's current arrangement (script in the project folder)."""
-    sh = find_render_script(project.dir, project.track) or os.path.join(
-        project.dir, f"render-{os.path.splitext(project.track)[0]}.sh")
+    """Render the project's current grid's arrangement (script in the project)."""
+    stem = os.path.splitext(project.track)[0]
+    cand = os.path.join(project.dir, f"render-{stem}{_tag_suffix(project.grid)}.sh")
+    sh = cand if os.path.exists(cand) else (
+        find_render_script(project.dir, project.track) or cand)
     yield from render(sh)
 
 

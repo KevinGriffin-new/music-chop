@@ -396,3 +396,20 @@ def test_arrange_project_outputs_into_project_dir(tmp_path, smoke_manifest):
     assert os.path.dirname(final["render_sh"]) == p.dir
     assert os.path.exists(final["render_sh"]) and os.path.exists(final["options"])
     assert final["summary"]["grid"] == "sections"
+
+
+def test_arrange_project_keeps_grid_variants(tmp_path, smoke_manifest):
+    """Trying a different sync scheme in a project accumulates side-by-side
+    variants (so you can compare cuts), instead of overwriting one."""
+    import shutil
+    media = tmp_path / "media"
+    (media / "catalog_audio").mkdir(parents=True)
+    (media / "catalog").mkdir()
+    write_analysis(str(media / "catalog_audio"), "/tmp/Song.mp3", track="Song")
+    shutil.copy(smoke_manifest, media / "catalog" / "manifest.csv")
+    p = engine.new_project(str(media), "Proj", "Song.mp3", clips="all", grid="sections")
+    engine.run_stage(engine.arrange_project(p, str(media)), lambda e: None)
+    p.grid = "downbeats"
+    engine.run_stage(engine.arrange_project(p, str(media)), lambda e: None)
+    have = sorted(f for f in os.listdir(p.dir) if f.startswith("render-"))
+    assert have == ["render-Song-downbeats.sh", "render-Song-sections.sh"]   # both kept
