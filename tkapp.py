@@ -68,7 +68,7 @@ IRIX = {
 #  * the shell / console — a fixed-width screen font. That's the CC0 "Irix
 #    Screen Mono 15" (vendored in assets/fonts/, install into ~/Library/Fonts);
 #    we use it for the green log and fall back to a mono family if absent.
-IRIX_MENU_FONT = ("Helvetica", 12, "italic")   # slanted menu/label text
+IRIX_MENU_FONT = ("Helvetica", 20, "italic")   # slanted menu/label text (try 20–24)
 IRIX_FONT_FAMILY = "Irix Screen Mono 15"        # fixed shell font
 IRIX_FONT_FALLBACK = "Menlo"            # macOS mono; any mono works
 IRIX_FONT_SIZE = -15                    # negative = pixels (crisp for a bitmap font)
