@@ -13,9 +13,10 @@ the inline-preview win that makes the web tier worth building first.
 This is a skeleton: enough to upload media, run analyze→arrange→render, browse
 the catalog gallery, and preview the result. Uploading a track saves it to
 album-audio/; uploading footage saves to sources/ then scene-splits + catalogs
-it; /api/gallery reuses clip_gallery.py's HTML. Still to flesh out: job ids / a
-job registry, parameter forms for the grid/reuse knobs, and richer error
-surfacing.
+it; /api/gallery reuses clip_gallery.py's HTML. Each running stage gets a job id
++ cancel token (the Cancel button POSTs /api/cancel?job=…), so a long
+render/analyze can be stopped. Still to flesh out: parameter forms for the
+grid/reuse knobs and richer error surfacing.
 
 Run:  uvicorn webapp:app --reload      (pip install fastapi uvicorn python-multipart)
 """
@@ -25,6 +26,8 @@ import json
 import os
 import shutil
 import sys
+import threading
+import uuid
 from typing import List
 from urllib.parse import quote
 
@@ -81,28 +84,66 @@ def _save_upload(upload: UploadFile, dest_dir: str, allowed: tuple) -> str:
     return name
 
 
-def _sse(stage_gen) -> StreamingResponse:
+# ── job registry (so a running stage can be cancelled) ──────────────────────
+# Each streaming stage mints a job id + a cancel Event; the browser learns the
+# id from the SSE events and POSTs it to /api/cancel to stop the work. The
+# engine watches the Event and terminates the underlying subprocess (and, for
+# render, its ffmpeg child group). Kept in-process — fine for the single-user
+# local tool this is.
+JOBS: dict = {}
+
+
+def _new_job():
+    """Register a new cancellable job; return (job_id, cancel_event)."""
+    job_id = uuid.uuid4().hex[:12]
+    cancel = threading.Event()
+    JOBS[job_id] = cancel
+    return job_id, cancel
+
+
+def _sse(stage_gen, cancel=None, job_id=None) -> StreamingResponse:
     """Adapter: turn a stage generator into an SSE stream of JSON events.
 
     A StageError (e.g. a missing prerequisite) is turned into a final `error`
     event so the browser can show an actionable message instead of the stream
-    just dying. Any other exception is reported the same way.
+    just dying. A Cancelled (the user pressed Cancel) becomes a `cancelled`
+    event — a clean stop, not an error. Any other exception is reported as an
+    error. Every event carries the `job` id so the browser knows what to cancel;
+    the job is unregistered when the stream ends.
     """
     def event_source():
         try:
             for ev in stage_gen:
                 payload = {"stage": ev.stage, "message": ev.message,
-                           "frac": ev.frac, "done": ev.done, "result": ev.result}
+                           "frac": ev.frac, "done": ev.done, "result": ev.result,
+                           "job": job_id}
                 yield f"data: {json.dumps(payload)}\n\n"
+        except engine.Cancelled:
+            yield ("data: " + json.dumps(
+                {"stage": "cancelled", "message": "cancelled", "frac": None,
+                 "done": True, "cancelled": True, "job": job_id}) + "\n\n")
         except engine.StageError as exc:
             yield ("data: " + json.dumps(
                 {"stage": "error", "message": str(exc), "frac": None,
-                 "done": True, "error": True}) + "\n\n")
+                 "done": True, "error": True, "job": job_id}) + "\n\n")
         except Exception as exc:  # last-resort: never leave the UI hanging
             yield ("data: " + json.dumps(
                 {"stage": "error", "message": f"unexpected: {exc}", "frac": None,
-                 "done": True, "error": True}) + "\n\n")
+                 "done": True, "error": True, "job": job_id}) + "\n\n")
+        finally:
+            if job_id is not None:
+                JOBS.pop(job_id, None)
     return StreamingResponse(event_source(), media_type="text/event-stream")
+
+
+@app.get("/api/cancel")
+def api_cancel(job: str):
+    """Signal a running job to stop. Returns whether the job was still live."""
+    cancel = JOBS.get(job)
+    if cancel is not None:
+        cancel.set()
+        return {"cancelled": True}
+    return {"cancelled": False}      # already finished / unknown id — no-op
 
 
 # ── upload endpoints (bring new media into the tree) ────────────────────────
@@ -126,10 +167,11 @@ def upload_footage(files: List[UploadFile] = File(...)):
 @app.get("/api/footage")
 def api_footage():
     """Scene-split everything in sources/, then (re)build the clip catalog."""
+    job_id, cancel = _new_job()
     def chain():
-        yield from engine.detect(SOURCES, CLIPS)
-        yield from engine.catalog(CLIPS, CATALOG)
-    return _sse(chain())
+        yield from engine.detect(SOURCES, CLIPS, cancel=cancel)
+        yield from engine.catalog(CLIPS, CATALOG, cancel=cancel)
+    return _sse(chain(), cancel=cancel, job_id=job_id)
 
 
 # ── catalog gallery (reuses clip_gallery.py's HTML) ─────────────────────────
@@ -222,13 +264,16 @@ def api_clip(path: str):
 @app.get("/api/analyze")
 def api_analyze(track: str):
     audio = os.path.join(MEDIA, "album-audio", track)
-    return _sse(engine.analyze(audio, CATALOG_AUDIO, plot=True))
+    job_id, cancel = _new_job()
+    return _sse(engine.analyze(audio, CATALOG_AUDIO, plot=True, cancel=cancel),
+                cancel=cancel, job_id=job_id)
 
 
 @app.get("/api/arrange")
 def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
                 allow_reuse: bool = False, drop_blurry: float = 0.0,
                 clip_from: str = "middle", project: str = ""):
+    job_id, cancel = _new_job()
     if project:
         # arrange within the project: (re)point it at the requested track (the
         # box is the source of truth), save the chosen options, scope to clips
@@ -238,19 +283,24 @@ def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
         (p.grid, p.beats_per_cut, p.allow_reuse, p.drop_blurry, p.clip_from) = (
             grid, beats_per_cut, allow_reuse, drop_blurry, clip_from)
         p.save()
-        return _sse(engine.arrange_project(p, MEDIA))
+        return _sse(engine.arrange_project(p, MEDIA, cancel=cancel),
+                    cancel=cancel, job_id=job_id)
     analysis = os.path.join(CATALOG_AUDIO,
                             f"{os.path.splitext(track)[0]}.analysis.json")
     return _sse(engine.arrange(analysis, MANIFEST, grid=grid,
                                beats_per_cut=beats_per_cut, allow_reuse=allow_reuse,
                                drop_blurry=drop_blurry, clip_from=clip_from,
-                               cut_dir=os.path.join(MEDIA, "cuts")))
+                               cut_dir=os.path.join(MEDIA, "cuts"), cancel=cancel),
+                cancel=cancel, job_id=job_id)
 
 
 @app.get("/api/render")
 def api_render(track: str = "", grid: str = "", project: str = ""):
+    job_id, cancel = _new_job()
     if project:
-        return _sse(engine.render_project(engine.load_project(MEDIA, project)))
+        return _sse(engine.render_project(engine.load_project(MEDIA, project),
+                                          cancel=cancel),
+                    cancel=cancel, job_id=job_id)
     # library mode: prefer the script for the chosen grid (render that specific
     # arrangement); else fall back to the newest render-<track>-*.sh.
     sh = None
@@ -265,8 +315,8 @@ def api_render(track: str = "", grid: str = "", project: str = ""):
             raise engine.StageError(
                 f"No render script for '{stem}' yet — run Arrange first.")
             yield  # noqa: unreachable — makes this a generator for _sse
-        return _sse(need_arrange())
-    return _sse(engine.render(sh))
+        return _sse(need_arrange(), cancel=cancel, job_id=job_id)
+    return _sse(engine.render(sh, cancel=cancel), cancel=cancel, job_id=job_id)
 
 
 # ── projects (mirror the Tk project flow on the shared engine model) ─────────
@@ -366,6 +416,7 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <button onclick="go('analyze')">Analyze</button>
 <button onclick="go('arrange')">Arrange</button>
 <button onclick="go('render')">Render</button>
+<button id=cancelbtn onclick="cancelJob()" disabled>Cancel</button>
 
 <fieldset style="margin:1rem 0">
 <legend>Arrange options</legend>
@@ -398,17 +449,32 @@ const busy = () => bar().removeAttribute('value');   // <progress> animates when
 const determinate = f => bar().value = f;
 const idle = () => bar().value = 0;
 
+let currentJob = null;
+const cancelBtn = () => document.getElementById('cancelbtn');
+function endStream(es){ es.close(); idle(); currentJob = null; cancelBtn().disabled = true; }
+
+async function cancelJob(){
+  if (!currentJob){ return; }
+  cancelBtn().disabled = true;          // one click; the stream confirms the stop
+  log('■ cancelling …');
+  try { await fetch('/api/cancel?job=' + encodeURIComponent(currentJob)); }
+  catch (e) { log('cancel request failed: ' + e); }
+}
+
 function stream(url, stage, track){
   busy();                       // show motion immediately so it never looks frozen
+  currentJob = null; cancelBtn().disabled = false;   // armed for the run
   const es = new EventSource(url);
   es.onmessage = e => {
     const ev = JSON.parse(e.data);
+    if (ev.job) currentJob = ev.job;    // learn the id so Cancel can target it
+    if (ev.cancelled){ log('■ cancelled'); endStream(es); return; }
     if (ev.error){
       log('⚠ ' + ev.message);
       if (/run Analyze/i.test(ev.message)) log('   → click "Analyze" first.');
       else if (/add footage/i.test(ev.message)) log('   → upload footage first.');
       else if (/run Arrange/i.test(ev.message)) log('   → click "Arrange" first.');
-      es.close(); idle(); return;
+      endStream(es); return;
     }
     if (ev.frac != null) determinate(ev.frac); else busy();
     log(`[${ev.stage}] ${ev.message}`);
@@ -423,7 +489,7 @@ function stream(url, stage, track){
         + ` · clip-from ${s.clip_from}`;
     }
     if (ev.done){
-      es.close(); idle();
+      endStream(es);
       if (stage === 'render' && ev.result && ev.result.video){
         const v = document.getElementById('vid');
         v.src = '/api/clip?path=' + encodeURIComponent(ev.result.video);
@@ -434,7 +500,7 @@ function stream(url, stage, track){
       }
     }
   };
-  es.onerror = () => { log('-- stream error --'); es.close(); idle(); };
+  es.onerror = () => { log('-- stream error --'); endStream(es); };
 }
 
 const $ = id => document.getElementById(id);

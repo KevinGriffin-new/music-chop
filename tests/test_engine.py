@@ -12,6 +12,8 @@ import csv
 import os
 import stat
 import sys
+import threading
+import time
 
 import pytest
 
@@ -51,6 +53,103 @@ def test_stream_raises_with_tail_on_nonzero():
         list(engine._stream(["bash", "-c", "echo boom; exit 3"], cwd=REPO))
     msg = str(ei.value)
     assert "exited 3" in msg and "boom" in msg
+
+
+# ── pure: cancellation ───────────────────────────────────────────────────────
+def test_cancelled_is_distinct_from_stage_error():
+    # the UIs branch on this: a cancel is a clean stop, not a failure dialog
+    assert not issubclass(engine.Cancelled, engine.StageError)
+    assert issubclass(engine.Cancelled, RuntimeError)
+
+
+def test_check_cancel_raises_only_when_set():
+    ev = threading.Event()
+    engine._check_cancel(ev, "x")        # not set → no-op
+    engine._check_cancel(None, "x")      # no token → no-op
+    ev.set()
+    with pytest.raises(engine.Cancelled):
+        engine._check_cancel(ev, "detect")
+
+
+def test_stream_cancel_stops_early_and_raises_cancelled():
+    """Setting the token mid-stream terminates the subprocess and raises
+    Cancelled (NOT StageError, even though the killed process exits nonzero)."""
+    cancel = threading.Event()
+    gen = engine._stream(
+        ["bash", "-c", "for i in $(seq 1 200); do echo $i; sleep 0.05; done"],
+        cwd=REPO, cancel=cancel)
+    seen = []
+    with pytest.raises(engine.Cancelled):
+        for line in gen:
+            seen.append(line)
+            if len(seen) == 3:
+                cancel.set()
+    assert 0 < len(seen) < 200           # stopped well short of the full run
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
+def test_stream_cancel_kills_child_process_group(tmp_path):
+    """render runs `bash script` which spawns ffmpeg children; cancelling must
+    kill the whole tree, not just bash. Simulate with a backgrounded child that
+    keeps touching a marker file — after cancel it must stop being updated."""
+    marker = tmp_path / "alive"
+    script = tmp_path / "tree.sh"
+    script.write_text(
+        f"( while true; do touch '{marker}'; sleep 0.05; done ) &\n"
+        "echo started\n"
+        "wait\n")
+    cancel = threading.Event()
+    gen = engine._stream(["bash", str(script)], cwd=str(tmp_path), cancel=cancel)
+    with pytest.raises(engine.Cancelled):
+        for line in gen:
+            if line == "started":
+                time.sleep(0.2)          # let the child touch the marker a few times
+                cancel.set()             # then cancel — kills bash AND the child
+    # _stream only returns after the group is terminated, so the child is gone:
+    # the marker exists (it ran) but its mtime must stop advancing.
+    assert marker.exists()
+    m1 = marker.stat().st_mtime
+    time.sleep(0.4)
+    assert marker.stat().st_mtime == m1, "child survived cancel — group not killed"
+
+
+def test_stream_abandoned_generator_reaps_subprocess(tmp_path):
+    """If the consumer stops iterating (e.g. an SSE client disconnects), the
+    finally-clause must terminate the subprocess rather than leak it."""
+    marker = tmp_path / "alive"
+    script = tmp_path / "leak.sh"
+    # echo once so the first next() returns; then loop silently touching marker
+    script.write_text(
+        "echo go\n"
+        f"while true; do touch '{marker}'; sleep 0.05; done\n")
+    gen = engine._stream(["bash", str(script)], cwd=str(tmp_path))
+    assert next(gen) == "go"             # started; child is now touching marker
+    time.sleep(0.15)                     # let it touch the marker at least once
+    gen.close()                          # GeneratorExit → finally should reap it
+    assert marker.exists()
+    m1 = marker.stat().st_mtime
+    time.sleep(0.4)
+    assert marker.stat().st_mtime == m1, "subprocess leaked after generator close"
+
+
+def test_catalog_propagates_cancel(tmp_path, monkeypatch):
+    """A real stage forwards the token: catalog stops with Cancelled (no done
+    event) when the token fires mid-run."""
+    stub = tmp_path / "slow_features.py"
+    stub.write_text(
+        "import sys, time\n"
+        "for i in range(1, 200):\n"
+        "    print(f'[{i}/199] clip'); sys.stdout.flush(); time.sleep(0.05)\n")
+    monkeypatch.setitem(engine.SCRIPT, "features", str(stub))
+    cancel = threading.Event()
+    gen = engine.catalog(str(tmp_path), str(tmp_path / "out"), cancel=cancel)
+    seen = []
+    with pytest.raises(engine.Cancelled):
+        for ev in gen:
+            seen.append(ev)
+            if len(seen) >= 2:
+                cancel.set()
+    assert seen and all(not e.done for e in seen)   # never reached completion
 
 
 # ── pure: fail-loud verification ─────────────────────────────────────────────

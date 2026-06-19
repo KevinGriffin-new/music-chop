@@ -25,7 +25,9 @@ File pickers (Add ▸ Music track… / Video footage…), the clip gallery (Gall
 the IRIX arrange-options dialog, and projects (New… / Open… — a project scopes a
 track + a clip selection + arrange options to its own folder) are all wired.
 Clip selection is gallery-based: multi-select thumbnails, then "New project from
-selection…". Still to flesh out: cancellation of a running stage.
+selection…". A running stage is cancellable: the Cancel button sets a threading
+Event the worker hands to the engine, which terminates the underlying
+subprocess (and, for render, its ffmpeg child group).
 
 Run:  python3 tkapp.py        (Tkinter ships with CPython)
 """
@@ -561,6 +563,7 @@ class App(tk.Tk):
         self.q: queue.Queue[engine.ProgressEvent] = queue.Queue()
         self._last_grid = None     # grid chosen in the options dialog; render reuses it
         self.project = None        # active Project (None => whole-library mode)
+        self._cancel = None        # cancel token for the in-flight stage (a threading.Event)
 
         title_font = (IRIX_MENU_FONT[0], IRIX_MENU_FONT[1] + 2, "bold italic")
         ttk.Label(self, text="dv2mv — offline", anchor="center", relief="raised",
@@ -594,6 +597,10 @@ class App(tk.Tk):
                              ("Render", "render")):
             ttk.Button(btns, text=label,
                        command=lambda s=stage: self.launch(s)).pack(side="left", padx=4)
+        # Cancel the running stage — disabled until one is in flight (see _begin/_end)
+        self.cancel_btn = ttk.Button(btns, text="Cancel", command=self.cancel_stage,
+                                     state="disabled")
+        self.cancel_btn.pack(side="right", padx=4)
 
         self.status = tk.Label(self, text="ready", bg=IRIX["dark"], fg="white",
                                font=IRIX_MENU_FONT, anchor="w", relief="sunken", bd=2)
@@ -620,11 +627,14 @@ class App(tk.Tk):
     def _begin(self) -> None:
         self.active += 1
         self._pb_frac = None
+        self.cancel_btn.config(state="normal")     # a stage is in flight → armed
 
     def _end(self) -> None:
         self.active = max(0, self.active - 1)
         if self.active == 0:
             self._pb_frac = None
+            self._cancel = None
+            self.cancel_btn.config(state="disabled")
 
     def _pb_tick(self) -> None:
         self.pb.delete("fill")
@@ -643,15 +653,22 @@ class App(tk.Tk):
 
     # ── run any stage generator on a worker thread, funnel into the queue ───
     def _spawn(self, make_gen) -> None:
-        """Run make_gen() (a no-arg fn returning a stage generator) off-thread.
+        """Run make_gen(cancel) (returning a stage generator) off-thread.
 
-        All UI feedback flows through self.q; never touch widgets from here.
+        `make_gen` takes the cancel token so it can hand it to the engine stage;
+        Cancel (the button) sets it from the main thread. All UI feedback flows
+        through self.q; never touch widgets from here.
         """
+        cancel = threading.Event()
+        self._cancel = cancel
         self._begin()
         def work():
             try:
-                for ev in make_gen():
+                for ev in make_gen(cancel):
                     self.q.put(ev)
+            except engine.Cancelled:
+                # a clean stop, not a failure — no error dialog (see _drain)
+                self.q.put(engine.ProgressEvent("cancelled", "cancelled", done=True))
             except engine.StageError as exc:
                 self.q.put(engine.ProgressEvent("error", f"FAILED: {exc}", done=True))
             finally:
@@ -660,6 +677,13 @@ class App(tk.Tk):
                 self.q.put(engine.ProgressEvent("__end__", "", done=True))
         threading.Thread(target=work, daemon=True).start()
 
+    def cancel_stage(self) -> None:
+        """Ask the running stage to stop (engine terminates its subprocess)."""
+        if self._cancel is not None and self.active:
+            self._cancel.set()
+            self.cancel_btn.config(state="disabled")    # one press; _drain confirms
+            self.status.config(text="cancelling …")
+
     # ── kick a stage off from the Track box ─────────────────────────────────
     def launch(self, stage: str) -> None:
         track = self.track.get().strip()
@@ -667,15 +691,15 @@ class App(tk.Tk):
         cat = os.path.join(media, "catalog_audio")
         stem = os.path.splitext(track)[0]
         if stage == "analyze":
-            self._spawn(lambda: engine.analyze(
-                os.path.join(media, "album-audio", track), cat))
+            self._spawn(lambda c: engine.analyze(
+                os.path.join(media, "album-audio", track), cat, cancel=c))
         elif stage == "arrange":
             if self.project:
                 self._arrange_project_flow()
             else:
                 self._open_arrange_options(track, cat, media)
         elif self.project:                                   # render the project
-            self._spawn(lambda: engine.render_project(self.project))
+            self._spawn(lambda c: engine.render_project(self.project, cancel=c))
         else:
             # library mode: prefer the grid last arranged; else the newest match
             sh = None
@@ -684,7 +708,7 @@ class App(tk.Tk):
                 sh = cand if os.path.exists(cand) else None
             sh = sh or engine.find_render_script(cat, track) or os.path.join(
                 cat, f"render-{stem}.sh")
-            self._spawn(lambda: engine.render(sh))
+            self._spawn(lambda c: engine.render(sh, cancel=c))
 
     # ── projects ────────────────────────────────────────────────────────────
     def _set_project(self, p) -> None:
@@ -754,7 +778,7 @@ class App(tk.Tk):
             p.save()                              # persists the (re)pointed track + opts
             self._set_project(p)                  # refresh the label's track
             self.status.config(text=f"arranging project '{p.name}' …")
-            self._spawn(lambda: engine.arrange_project(p, engine.MEDIA))
+            self._spawn(lambda c: engine.arrange_project(p, engine.MEDIA, cancel=c))
         ArrangeOptions(self, on_ok=run, initial=p.arrange_opts())
 
     def _open_arrange_options(self, track: str, cat: str, media: str) -> None:
@@ -771,7 +795,8 @@ class App(tk.Tk):
         def run(p):
             self._last_grid = p["grid"]
             self.status.config(text=f"arranging on the {p['grid']} grid …")
-            self._spawn(lambda: engine.arrange(analysis, manifest, cut_dir=cuts, **p))
+            self._spawn(lambda c: engine.arrange(analysis, manifest, cut_dir=cuts,
+                                                 cancel=c, **p))
         ArrangeOptions(self, on_ok=run,
                        initial={"grid": self._last_grid or "sections"})
 
@@ -786,7 +811,7 @@ class App(tk.Tk):
         self.track.insert(0, os.path.basename(path))   # so Arrange/Render find it
         cat = os.path.join(engine.MEDIA, "catalog_audio")
         self.status.config(text=f"analyzing {os.path.basename(path)} …")
-        self._spawn(lambda: engine.analyze(path, cat, plot=True))
+        self._spawn(lambda c: engine.analyze(path, cat, plot=True, cancel=c))
 
     def add_footage(self) -> None:
         """Pick one or more videos, scene-split them, then (re)build the catalog."""
@@ -799,9 +824,9 @@ class App(tk.Tk):
         sources = list(paths)
         self.status.config(text=f"ingesting {len(sources)} clip(s) …")
 
-        def chain():
-            yield from engine.detect(sources, clips)
-            yield from engine.catalog(clips, cat)
+        def chain(c):
+            yield from engine.detect(sources, clips, cancel=c)
+            yield from engine.catalog(clips, cat, cancel=c)
         self._spawn(chain)
 
     def open_gallery(self) -> None:

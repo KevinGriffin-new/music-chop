@@ -158,6 +158,49 @@ def test_tkapp_has_progress_and_prompt_machinery():
         assert hasattr(tkapp.App, attr), attr
 
 
+# ── cancellation: web job registry + endpoint ────────────────────────────────
+def test_cancel_unknown_job_is_noop(client):
+    """Cancelling a finished/unknown id is a graceful no-op, not an error."""
+    r = client.get("/api/cancel", params={"job": "does-not-exist"})
+    assert r.status_code == 200 and r.json()["cancelled"] is False
+
+
+def test_cancel_sets_registered_job_event(client):
+    """/api/cancel sets the cancel Event the engine watches for the given job."""
+    import threading
+    ev = threading.Event()
+    webapp.JOBS["testjob"] = ev
+    try:
+        r = client.get("/api/cancel", params={"job": "testjob"})
+        assert r.json()["cancelled"] is True
+        assert ev.is_set()
+    finally:
+        webapp.JOBS.pop("testjob", None)
+
+
+def test_index_has_cancel_control(client):
+    html = client.get("/").text
+    assert "cancelbtn" in html and "cancelJob" in html   # button + handler
+    assert "/api/cancel" in html                          # wired to the endpoint
+    assert "ev.cancelled" in html                         # clean-stop event handled
+
+
+def test_tkapp_has_cancel_machinery():
+    pytest.importorskip("tkinter")
+    import tkapp
+    assert hasattr(tkapp.App, "cancel_stage")
+
+
+def test_tk_cancel_button_present_and_idle_safe(app):
+    """Cancel is disabled while idle, and pressing it with nothing running is a
+    safe no-op (must not raise or arm a phantom stop)."""
+    assert hasattr(app, "cancel_btn")
+    assert str(app.cancel_btn.cget("state")) == "disabled"
+    app.cancel_stage()                                    # no active stage
+    assert str(app.cancel_btn.cget("state")) == "disabled"
+    assert app._cancel is None
+
+
 # ── Tk clip gallery ──────────────────────────────────────────────────────────
 def test_tk_gallery_path_helpers():
     pytest.importorskip("tkinter")

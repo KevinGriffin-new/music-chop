@@ -39,8 +39,10 @@ import csv
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from glob import glob
 from typing import Callable, Iterator, Optional
@@ -86,26 +88,106 @@ class StageError(RuntimeError):
     """A stage failed; message carries the captured reason."""
 
 
+class Cancelled(RuntimeError):
+    """A stage was cancelled on request — a clean stop, NOT a failure.
+
+    Kept distinct from StageError so the front ends can tell "the user pressed
+    Cancel" (reset the bar, log it) apart from "the stage actually broke" (show
+    an error dialog). A cancel token is just a threading.Event: pass one into a
+    stage and call .set() from another thread (the UI) to stop it.
+    """
+
+
+# A cancel token is duck-typed as "anything with is_set()/wait()" — i.e. a
+# threading.Event. None means "not cancellable" (the historical behavior).
+CancelToken = Optional[threading.Event]
+
 ProgressCallback = Callable[[ProgressEvent], None]
 
 
+def _check_cancel(cancel: CancelToken, stage: str) -> None:
+    """Raise Cancelled if the token is set. Call between subprocess invocations
+    (e.g. per-file loops) so a multi-step stage stops promptly rather than
+    launching the next subprocess after a cancel."""
+    if cancel is not None and cancel.is_set():
+        raise Cancelled(f"{stage}: cancelled")
+
+
 # ── subprocess plumbing shared by every stage ──────────────────────────────
-def _stream(cmd: list[str], cwd: str) -> Iterator[str]:
+def _terminate(proc: subprocess.Popen) -> None:
+    """Stop a running subprocess (and its children) promptly.
+
+    On POSIX the child is its own session leader (start_new_session below), so
+    we signal the whole process *group* — otherwise cancelling `render` would
+    kill the `bash` wrapper but leave its `ffmpeg` child encoding for minutes.
+    SIGTERM first for a clean exit, SIGKILL if it ignores us. Windows has no
+    process groups here, so fall back to terminate()/kill() on the child.
+    """
+    try:
+        if os.name == "posix":
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    except (ProcessLookupError, OSError):
+        pass  # already gone
+
+
+def _cancel_watch(proc: subprocess.Popen, cancel: threading.Event) -> None:
+    """Watch a cancel token while `proc` runs; terminate it the moment it fires.
+
+    Runs on a daemon thread so cancellation is prompt even when the subprocess
+    is silent (e.g. ffmpeg mid-encode), where polling the output stream alone
+    would block. Exits on its own when the process ends naturally."""
+    while proc.poll() is None:
+        if cancel.wait(0.2):            # set within the timeout → cancel now
+            _terminate(proc)
+            return
+
+
+def _stream(cmd: list[str], cwd: str, cancel: CancelToken = None) -> Iterator[str]:
     """Run cmd, yielding combined stdout/stderr lines as they appear.
 
-    Raises StageError(non-zero exit) with the tail of output for context.
+    Raises StageError(non-zero exit) with the tail of output for context. If a
+    `cancel` token is given and fires, the subprocess (and its process group on
+    POSIX) is terminated and Cancelled is raised instead. The finally-clause
+    also reaps the process if the consumer abandons the generator (e.g. an SSE
+    client disconnects), so a stage never leaks a running ffmpeg.
     """
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1,
+        start_new_session=(os.name == "posix"),   # own group → killable as a tree
     )
+    watcher = None
+    if cancel is not None:
+        watcher = threading.Thread(target=_cancel_watch, args=(proc, cancel),
+                                   daemon=True)
+        watcher.start()
     tail: list[str] = []
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.rstrip("\n")
-        tail = (tail + [line])[-25:]
-        yield line
-    code = proc.wait()
+    code = None
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            tail = (tail + [line])[-25:]
+            yield line
+        code = proc.wait()
+    finally:
+        if proc.poll() is None:         # consumer bailed (GeneratorExit) — don't leak
+            _terminate(proc)
+        if watcher is not None:
+            watcher.join(timeout=1)
+    if cancel is not None and cancel.is_set():
+        raise Cancelled(f"{os.path.basename(cmd[0])}: cancelled")
     if code != 0:
         raise StageError(f"{cmd[0]} ... exited {code}\n" + "\n".join(tail))
 
@@ -189,6 +271,7 @@ def ingest(
     preset: str = "slow",
     fps: Optional[int] = 30,
     scale: Optional[str] = "720:480",
+    cancel: CancelToken = None,
 ) -> Iterator[ProgressEvent]:
     """Transcode every source in src_dir to a common codec/res/fps in out_dir.
 
@@ -229,6 +312,7 @@ def ingest(
 
     total = len(todo)
     for i, (f, out) in enumerate(todo):
+        _check_cancel(cancel, st)
         yield ProgressEvent(st, f"normalizing — {os.path.basename(f)}", i / total)
         cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", f]
         if vf:
@@ -236,7 +320,7 @@ def ingest(
         cmd += ["-c:v", "libx264", "-crf", str(crf), "-preset", preset,
                 "-c:a", "aac", out]
         tail = []
-        for line in _stream(cmd, cwd=MEDIA):
+        for line in _stream(cmd, cwd=MEDIA, cancel=cancel):
             tail = (tail + [line])[-25:]
         _require(st, {"out": out}, tail)
     outs = [os.path.join(out_dir, os.path.splitext(os.path.basename(f))[0] + ".mp4")
@@ -270,6 +354,7 @@ def detect(
     min_scene_len: str = "0.6s",
     rate_factor: int = 18,
     preset: str = "slow",
+    cancel: CancelToken = None,
 ) -> Iterator[ProgressEvent]:
     """Split source video into scene clips in out_dir.
 
@@ -296,6 +381,7 @@ def detect(
 
     total = len(todo)
     for i, f in enumerate(todo):
+        _check_cancel(cancel, st)
         base = os.path.basename(f)
         yield ProgressEvent(st, f"detecting scenes — {base}", i / total)
         cmd = [
@@ -304,7 +390,7 @@ def detect(
             "--min-scene-len", min_scene_len,
             "split-video", "--rate-factor", str(rate_factor), "--preset", preset,
         ]
-        for _ in _stream(cmd, cwd=MEDIA):
+        for _ in _stream(cmd, cwd=MEDIA, cancel=cancel):
             pass  # scenedetect is noisy; we report per-file granularity
     n = len(glob(os.path.join(out_dir, "*-Scene-*.mp4")))
     if n == 0:
@@ -322,6 +408,7 @@ def catalog(
     frames: int = 12,
     width: int = 160,
     recursive: bool = False,
+    cancel: CancelToken = None,
 ) -> Iterator[ProgressEvent]:
     """Extract features → out_dir/manifest.csv (+ histograms.npz, thumbs/).
 
@@ -335,7 +422,7 @@ def catalog(
     if recursive:
         cmd.append("--recursive")
     tail: list[str] = []
-    for line in _stream(cmd, cwd=MEDIA):
+    for line in _stream(cmd, cwd=MEDIA, cancel=cancel):
         tail = (tail + [line])[-25:]
         m = _IOFN.search(line)
         if m:
@@ -353,6 +440,7 @@ def analyze(
     out_dir: str,
     sr: int = 22050,
     plot: bool = True,
+    cancel: CancelToken = None,
 ) -> Iterator[ProgressEvent]:
     """Run track_analyze on a single track → out_dir/<track>.analysis.json (+png).
 
@@ -375,7 +463,7 @@ def analyze(
         cmd.append("--plot")
     yield ProgressEvent(st, f"analyzing {track} …", None)
     tail = []
-    for line in _stream(cmd, cwd=MEDIA):
+    for line in _stream(cmd, cwd=MEDIA, cancel=cancel):
         tail = (tail + [line])[-25:]
         # track_analyze emits "PROG i/n message" per step → a real moving bar
         m = _PROG.search(line)
@@ -434,6 +522,7 @@ def arrange(
     tag: Optional[str] = None,         # output suffix; defaults to the grid name
     out_dir: Optional[str] = None,     # where sidecars land; default = analysis dir
     cut_dir: Optional[str] = None,     # where the final cut-*.mp4 lands; default = out_dir
+    cancel: CancelToken = None,
 ) -> Iterator[ProgressEvent]:
     """Build the cut: order-sync csv, labels, markers, and render-<track>.sh.
 
@@ -471,7 +560,7 @@ def arrange(
         cmd.append("--allow-reuse")
     yield ProgressEvent(st, f"syncing clips on the {grid} grid …", None)
     match, tail = None, []
-    for line in _stream(cmd, cwd=MEDIA):
+    for line in _stream(cmd, cwd=MEDIA, cancel=cancel):
         tail = (tail + [line])[-25:]
         m = _MATCH.search(line)
         if m:
@@ -497,7 +586,7 @@ def arrange(
 
 
 # ── stage 5: render (cut the clips to the grid + lay the music on top) ──────
-def render(render_sh: str) -> Iterator[ProgressEvent]:
+def render(render_sh: str, cancel: CancelToken = None) -> Iterator[ProgressEvent]:
     """Execute the render-<track>.sh produced by arrange() → cut-<track>.mp4.
 
     The script re-encodes every segment then concats + muxes the audio, so this
@@ -516,7 +605,7 @@ def render(render_sh: str) -> Iterator[ProgressEvent]:
     video = None
     yield ProgressEvent(st, "rendering — this is the slow one …", None)
     tail = []
-    for line in _stream(["bash", render_sh], cwd=cwd):
+    for line in _stream(["bash", render_sh], cwd=cwd, cancel=cancel):
         line = line.strip()
         if not line:
             continue
@@ -653,7 +742,8 @@ def write_scoped_manifest(library_manifest: str, clips, out_path: str) -> str:
     return out_path
 
 
-def arrange_project(project: Project, media: str) -> Iterator[ProgressEvent]:
+def arrange_project(project: Project, media: str,
+                    cancel: CancelToken = None) -> Iterator[ProgressEvent]:
     """Arrange a project: scoped manifest + the shared analysis -> the project's
     own folder (tag="" so a project owns exactly one current arrangement)."""
     stem = os.path.splitext(project.track)[0]
@@ -665,16 +755,17 @@ def arrange_project(project: Project, media: str) -> Iterator[ProgressEvent]:
     # variants in the project folder (render-<track>-<grid>.sh / cut-…-<grid>.mp4)
     # to compare, rather than overwriting one cut.
     yield from arrange(analysis, manifest, out_dir=project.dir, tag=project.grid,
-                       **project.arrange_opts())
+                       cancel=cancel, **project.arrange_opts())
 
 
-def render_project(project: Project) -> Iterator[ProgressEvent]:
+def render_project(project: Project,
+                   cancel: CancelToken = None) -> Iterator[ProgressEvent]:
     """Render the project's current grid's arrangement (script in the project)."""
     stem = os.path.splitext(project.track)[0]
     cand = os.path.join(project.dir, f"render-{stem}{_tag_suffix(project.grid)}.sh")
     sh = cand if os.path.exists(cand) else (
         find_render_script(project.dir, project.track) or cand)
-    yield from render(sh)
+    yield from render(sh, cancel=cancel)
 
 
 # ── smoke test ─────────────────────────────────────────────────────────────

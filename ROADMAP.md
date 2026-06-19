@@ -5,7 +5,8 @@ the **bug tracker** (https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv), which
 is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
 ## Next
-- **Cancellation** of a running stage (both tiers) — stop a long render/analyze.
+- **Export an editable timeline → DaVinci Resolve** (see below) — now the
+  highest-value remaining feature.
 
 ## Bigger features
 - **Export an editable timeline → DaVinci Resolve.** Instead of (or alongside)
@@ -40,5 +41,8 @@ Hardened engine (6 stages, fail-loud, real progress, provenance); both UIs with
 uploads/pickers; catalog gallery + gallery-based clip selection (Tk + web);
 library cuts collected in a cuts/ folder;
 arrange options + energy-match summary; IRIX/4Dwm Tk theme + SGI font; projects
-(track + scoped clips + options) in the engine, Tk, and the web tier; MPL-2.0;
-on sr.ht.
+(track + scoped clips + options) in the engine, Tk, and the web tier;
+**cancellation** of a running stage in both tiers (a `threading.Event` token
+threaded through every stage; the engine terminates the subprocess process
+group so a render's `ffmpeg` child dies too — web has a job registry +
+`/api/cancel`, Tk has a Cancel button); MPL-2.0; on sr.ht.

@@ -54,6 +54,14 @@ Each stage is a generator yielding `ProgressEvent(stage, message, frac, done,
 result)` and raises `StageError` on failure — no printing, no globals. Stages
 verify their declared outputs exist before reporting `done`.
 
+**Cancelling a stage.** Every stage accepts an optional `cancel` token (a
+`threading.Event`); set it from another thread to stop a long render/analyze.
+The engine terminates the running subprocess *and its process group*, so a
+render's `ffmpeg` child is killed too, then raises `Cancelled` (distinct from
+`StageError` — a clean stop, not a failure). The web tier exposes this as a job
+registry + `GET /api/cancel?job=<id>` behind the **Cancel** button; the Tk tier
+has a **Cancel** button that sets the worker's token.
+
 ## Setup
 
 ```bash
