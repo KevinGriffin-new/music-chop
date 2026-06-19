@@ -5,11 +5,12 @@ the **bug tracker** (https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv), which
 is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
 ## Next
-- **Projects in the web tier.** New/Open project + scoped arrange in `webapp.py`,
-  mirroring the Tk flow. (The engine project model is already shared.)
 - **Library-mode cuts → a dedicated `cuts/` folder** instead of `catalog_audio/`
   (output discoverability; the other half of the render-path work). Projects
   already isolate their cut under `projects/<name>/`.
+- **Gallery-based clip selection in the web tier.** The web project create form
+  scopes by source/tape; the Tk gallery already does multi-select — bring that
+  to the web `/api/gallery`.
 
 ## Later
 - **Cancellation** of a running stage (both tiers) — stop a long render/analyze.
@@ -27,4 +28,5 @@ is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 Hardened engine (6 stages, fail-loud, real progress, provenance); both UIs with
 uploads/pickers; catalog gallery (web + Tk, with gallery-based clip selection);
 arrange options + energy-match summary; IRIX/4Dwm Tk theme + SGI font; projects
-(track + scoped clips + options) in the engine and Tk; MPL-2.0; on sr.ht.
+(track + scoped clips + options) in the engine, Tk, and the web tier; MPL-2.0;
+on sr.ht.
