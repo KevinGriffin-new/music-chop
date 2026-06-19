@@ -15,6 +15,14 @@ Prereqs (macOS):
   System Settings → Privacy & Security → Accessibility → enable your terminal
   (Terminal/iTerm). Screen Recording too if you later add screenshots.
 
+  GOTCHA: synthetic clicks (CGEventPost) need the Accessibility grant attributed
+  to the process that posts them. For a CLI run, macOS may attribute it to the
+  *python binary*, not the terminal — and an unsigned/ad-hoc-signed interpreter
+  (e.g. a conda python) is often refused by TCC even with the terminal granted.
+  Symptom: the cursor MOVES (CGWarp needs no grant) but clicks never register.
+  If you hit that wall, run under a signed python.org / system python, or just
+  rely on the headless suite — the workflow itself is verified.
+
 Run (don't touch the mouse while it runs; slam the pointer into a screen corner
 to abort via pyautogui's failsafe):
   DV2MV_MEDIA=/path/to/media python3 tests/gui_smoke.py
