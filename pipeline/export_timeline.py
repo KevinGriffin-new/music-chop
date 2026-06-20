@@ -25,8 +25,8 @@ Usage:
   python3 export_timeline.py --arrange catalog_audio/song-sections.arrange.json
   python3 export_timeline.py --arrange ... --out /some/dir --formats otio,fcpxml
 
-Requires: opentimelineio, and the FCP X adapter (otio-fcpx-xml-adapter) for the
-.fcpxml output. Both are pip-installable; see requirements.txt.
+Requires: opentimelineio (for the .otio output). The .fcpxml is hand-emitted —
+no FCP X adapter needed — so it lands in exactly the structure Resolve imports.
 """
 import argparse
 import csv
@@ -51,11 +51,14 @@ def _url(path):
 def _clip(name, src_path, in_s, dur_s, avail_s, fps):
     """One OTIO clip: an external media ref with the clip's full available range,
     source-trimmed to [in_s, in_s+dur_s). Times are snapped to whole frames at
-    fps (sub-frame drift across clips is editorial slack, conformed on import)."""
+    fps (sub-frame drift across clips is editorial slack, conformed on import).
+    The media reference is named (the file's basename) so the imported media pool
+    shows real clip names rather than blanks."""
     mr = otio.schema.ExternalReference(
         target_url=_url(src_path),
         available_range=TimeRange(RationalTime(0, fps),
                                   RationalTime(round(max(avail_s, dur_s) * fps), fps)))
+    mr.name = os.path.basename(src_path)
     return otio.schema.Clip(
         name=name, media_reference=mr,
         source_range=TimeRange(RationalTime(round(in_s * fps), fps),
@@ -88,6 +91,101 @@ def build_timeline(meta, rows):
         audio.append(_clip(os.path.splitext(os.path.basename(music))[0],
                            music, 0.0, song, song, fps))
     return tl
+
+
+# ── FCPXML (hand-emitted) ────────────────────────────────────────────────────
+# We don't use OTIO's fcpx adapter: it emits a <project> with no <library>/<event>
+# wrapper (Resolve fails with 'Unable to find inherited value for key "library"')
+# plus stray top-level <asset-clip>s. Emitting the document ourselves guarantees
+# the structure Resolve imports, and keeps the dep surface to OTIO core only.
+def _attr(s) -> str:
+    """Escape a value for an XML double-quoted attribute."""
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def build_fcpxml(meta, rows) -> str:
+    """Pure: arrange `meta` + order `rows` -> an FCPXML 1.9 document string.
+
+    One <asset> per unique source clip (deduped), the cut on the primary spine
+    (each asset-clip trimmed at its source in-point), and the music as a
+    connected clip (lane -1) on the first cut clip. Times are exact frame
+    rationals (<frames>/<fps>s) at the timeline's fps.
+    """
+    tl = meta.get("timeline") or {}
+    fps = int(tl.get("fps") or 30)
+    w, h = int(tl.get("width") or 1920), int(tl.get("height") or 1080)
+
+    def t(seconds) -> str:
+        return f"{round(float(seconds) * fps)}/{fps}s"
+
+    # dedupe sources → asset ids (r1 is reserved for the format)
+    asset_id, resources = {}, []
+    for r in rows:
+        p = os.path.abspath(r["clip"])
+        if p in asset_id:
+            continue
+        aid = f"r{len(asset_id) + 2}"
+        asset_id[p] = aid
+        dur = t(r.get("clip_src_dur_s") or r["slot_dur_s"])
+        resources.append(
+            f'    <asset id="{aid}" name="{_attr(os.path.splitext(os.path.basename(p))[0])}" '
+            f'src="{_attr(_url(p))}" start="0s" duration="{dur}" '
+            f'hasVideo="1" hasAudio="0" format="r1"/>')
+
+    music = meta.get("music")
+    song = float(meta.get("duration_s") or 0)
+    audio_id = None
+    if music and song > 0:
+        audio_id = f"r{len(asset_id) + 2}"
+        resources.append(
+            f'    <asset id="{audio_id}" name="{_attr(os.path.splitext(os.path.basename(music))[0])}" '
+            f'src="{_attr(_url(music))}" start="0s" duration="{t(song)}" '
+            f'hasVideo="0" hasAudio="1"/>')
+
+    # spine: video cuts in order; the music connected (lane -1) to the first cut
+    spine, off = [], 0.0
+    for i, r in enumerate(rows):
+        p = os.path.abspath(r["clip"])
+        name = _attr(os.path.splitext(os.path.basename(p))[0])
+        dur, instart = float(r["slot_dur_s"]), float(r.get("clip_in_s") or 0)
+        open_tag = (f'<asset-clip ref="{asset_id[p]}" name="{name}" '
+                    f'offset="{t(off)}" start="{t(instart)}" duration="{t(dur)}" format="r1"')
+        if i == 0 and audio_id:
+            mname = _attr(os.path.splitext(os.path.basename(music))[0])
+            spine.append(
+                f'            {open_tag}>\n'
+                f'              <asset-clip ref="{audio_id}" name="{mname}" lane="-1" '
+                f'offset="0s" start="0s" duration="{t(song)}" audioRole="music"/>\n'
+                f'            </asset-clip>')
+        else:
+            spine.append(f'            {open_tag}/>')
+        off += dur
+
+    tag = meta.get("tag") or ""
+    proj = _attr(f"{meta['track']}-{tag}" if tag else meta["track"])
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE fcpxml>\n'
+        '<fcpxml version="1.9">\n'
+        '  <resources>\n'
+        f'    <format id="r1" name="FFVideoFormat{w}x{h}p{fps}" '
+        f'frameDuration="1/{fps}s" width="{w}" height="{h}"/>\n'
+        + "\n".join(resources) + "\n"
+        '  </resources>\n'
+        '  <library>\n'
+        '    <event name="dv2mv">\n'
+        f'      <project name="{proj}">\n'
+        f'        <sequence format="r1" duration="{t(off)}" tcStart="0s" '
+        'tcFormat="NDF" audioLayout="stereo" audioRate="48k">\n'
+        '          <spine>\n'
+        + "\n".join(spine) + "\n"
+        '          </spine>\n'
+        '        </sequence>\n'
+        '      </project>\n'
+        '    </event>\n'
+        '  </library>\n'
+        '</fcpxml>\n')
 
 
 def load_arrange(arrange_json):
@@ -125,7 +223,6 @@ def main():
         sys.exit(f"unknown format(s): {', '.join(bad)} (known: {', '.join(EXT)})")
 
     meta, rows = load_arrange(args.arrange)
-    tl = build_timeline(meta, rows)
 
     out_dir = os.path.abspath(args.out) if args.out else \
         os.path.dirname(os.path.abspath(args.arrange))
@@ -137,7 +234,11 @@ def main():
     wrote = []
     for f in formats:
         path = os.path.join(out_dir, f"{stem}.{EXT[f]}")
-        otio.adapters.write_to_file(tl, path)
+        if f == "fcpxml":
+            with open(path, "w") as fh:           # hand-emitted (Resolve-importable)
+                fh.write(build_fcpxml(meta, rows))
+        else:
+            otio.adapters.write_to_file(build_timeline(meta, rows), path)
         wrote.append(path)
         # the engine parses these "wrote <path>" lines into the result
         print(f"wrote {path}")

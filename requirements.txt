@@ -20,8 +20,7 @@ coverage>=7.14     # numba imports coverage.types.Tracer at load; older
                    # librosa import chain. Pin keeps the analyze stage working.
 
 # ── timeline export (export stage → DaVinci Resolve) ──
-opentimelineio          # build the editable timeline (.otio)
-otio-fcpx-xml-adapter   # write FCP X XML (.fcpxml) — the reliable Resolve import
+opentimelineio          # build the editable timeline (.otio); .fcpxml is hand-emitted
 
 # ── web tier only ──
 fastapi

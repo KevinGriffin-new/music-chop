@@ -19,7 +19,7 @@ import pytest
 
 from conftest import (engine, REPO, write_analysis, requires_ffmpeg,
                       requires_scenedetect, requires_librosa, requires_cv2,
-                      requires_otio, requires_fcpx)
+                      requires_otio)
 
 
 def drain(gen):
@@ -734,9 +734,43 @@ def test_build_timeline_structure():
     # first slot: middle in-point 3.0s @30fps = frame 90, 2.0s = 60 frames
     assert vclips[0].source_range.start_time.value == 90
     assert vclips[0].source_range.duration.value == 60
+    # media references are named (so the imported media pool isn't blank)
+    assert vclips[0].media_reference.name == "a.mp4"
     aclips = clips(audio)
     assert len(aclips) == 1                       # the music, full song
     assert aclips[0].source_range.duration.value == round(4.0 * 30)
+    assert aclips[0].media_reference.name == "song.mp3"
+
+
+def test_build_fcpxml_structure():
+    """The hand-emitted FCPXML is well-formed and has the library/event/project/
+    sequence/spine hierarchy Resolve requires (the OTIO adapter omitted it)."""
+    import xml.etree.ElementTree as ET
+    from pipeline.export_timeline import build_fcpxml
+    meta = {"track": "Song", "tag": "sections", "music": "/m/Song.mp3",
+            "duration_s": 6.0, "timeline": {"fps": 30, "width": 720, "height": 480}}
+    rows = [{"clip": "/v/a.mp4", "slot_dur_s": "2.0", "clip_in_s": "3.0",
+             "clip_src_dur_s": "6.83"},
+            {"clip": "/v/b.mp4", "slot_dur_s": "4.0", "clip_in_s": "0.0",
+             "clip_src_dur_s": "4.0"},
+            {"clip": "/v/a.mp4", "slot_dur_s": "1.0", "clip_in_s": "1.0",
+             "clip_src_dur_s": "6.83"}]
+    root = ET.fromstring(build_fcpxml(meta, rows))     # well-formed or raises
+    # the hierarchy that was missing before (caused Resolve's "library" error)
+    seq = root.find("./library/event/project/sequence")
+    assert seq is not None
+    spine = seq.find("spine")
+    assert spine is not None
+    # one <asset> per UNIQUE source clip (a.mp4 reused) + the music = 3
+    assert len(root.findall("./resources/asset")) == 3
+    # video cuts on the primary spine (3 slots), music connected on lane -1
+    vclips = [c for c in spine.findall("asset-clip") if c.get("lane") is None]
+    assert len(vclips) == 3
+    assert vclips[0].get("start") == "90/30s"          # 3.0s in-point @30fps
+    assert vclips[0].get("offset") == "0/30s" and vclips[0].get("duration") == "60/30s"
+    music = spine.find(".//asset-clip[@lane='-1']")
+    assert music is not None and music.get("duration") == "180/30s"   # 6s song
+    assert seq.get("duration") == "210/30s"            # 2+4+1 = 7s total
 
 
 @requires_otio
@@ -762,8 +796,11 @@ def test_export_writes_otio_and_reads_back(synth_analysis, smoke_manifest, tmp_p
     assert tl.name.endswith("-sections")
 
 
-@requires_fcpx
+@requires_otio
 def test_export_writes_fcpxml(synth_analysis, smoke_manifest, tmp_path):
+    """End-to-end fcpxml export is a real, well-formed FCPXML with the library
+    hierarchy (no FCP X adapter needed — it's hand-emitted)."""
+    import xml.etree.ElementTree as ET
     arr = engine.run_stage(
         engine.arrange(synth_analysis, smoke_manifest, grid="sections",
                        allow_reuse=True),
@@ -772,8 +809,9 @@ def test_export_writes_fcpxml(synth_analysis, smoke_manifest, tmp_path):
     final = engine.run_stage(engine.export(arr["options"], out_dir=out,
                                            formats=("fcpxml",)), lambda e: None)
     assert "fcpxml" in final and os.path.exists(final["fcpxml"])
-    head = open(final["fcpxml"]).read(200)
-    assert "<fcpxml" in head                      # a real FCPXML document
+    root = ET.parse(final["fcpxml"]).getroot()
+    assert root.tag == "fcpxml"
+    assert root.find("./library/event/project/sequence/spine") is not None
 
 
 def test_export_missing_arrange_prompts_arrange(tmp_path):
