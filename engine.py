@@ -698,6 +698,7 @@ def arrange(
     allow_reuse: bool = False,
     drop_blurry: float = 0.0,
     clip_from: str = "middle",         # middle | start
+    match: str = "energy",             # energy | contrast (clip↔slot weighting)
     tag: Optional[str] = None,         # output suffix; defaults to the grid name
     out_dir: Optional[str] = None,     # where sidecars land; default = analysis dir
     cut_dir: Optional[str] = None,     # where the final cut-*.mp4 lands; default = out_dir
@@ -729,7 +730,7 @@ def arrange(
            "--manifest", manifest, "--grid", grid,
            "--beats-per-cut", str(beats_per_cut),
            "--drop-blurry", str(drop_blurry), "--clip-from", clip_from,
-           "--tag", tag]
+           "--match", match, "--tag", tag]
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         cmd += ["--out", out_dir]
@@ -773,6 +774,7 @@ def compare(
     allow_reuse: bool = False,
     drop_blurry: float = 0.0,
     clip_from: str = "middle",
+    match: str = "energy",
     out_dir: Optional[str] = None,
     cut_dir: Optional[str] = None,
     cancel: CancelToken = None,
@@ -802,7 +804,7 @@ def compare(
             final: dict = {}
             for ev in arrange(analysis_json, manifest, grid=g,
                               beats_per_cut=beats_per_cut, allow_reuse=allow_reuse,
-                              drop_blurry=drop_blurry, clip_from=clip_from,
+                              drop_blurry=drop_blurry, clip_from=clip_from, match=match,
                               out_dir=out_dir, cut_dir=cut_dir, cancel=cancel):
                 if ev.done:
                     final = ev.result
@@ -944,17 +946,18 @@ class Project:
     allow_reuse: bool = False
     drop_blurry: float = 0.0
     clip_from: str = "middle"
+    match: str = "energy"               # energy | contrast (clip↔slot weighting)
     dir: str = ""                       # project folder (holds project.json + outputs)
 
     def arrange_opts(self) -> dict:
         return {"grid": self.grid, "beats_per_cut": self.beats_per_cut,
                 "allow_reuse": self.allow_reuse, "drop_blurry": self.drop_blurry,
-                "clip_from": self.clip_from}
+                "clip_from": self.clip_from, "match": self.match}
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in
              ("name", "track", "clips", "grid", "beats_per_cut",
-              "allow_reuse", "drop_blurry", "clip_from")}
+              "allow_reuse", "drop_blurry", "clip_from", "match")}
         return d
 
     def save(self) -> str:
@@ -990,7 +993,8 @@ def new_project(media: str, name: str, track: str, clips="all", **opts) -> Proje
     p = Project(name=name, track=track, clips=clips,
                 dir=os.path.join(projects_root(media), _safe_name(name)),
                 **{k: v for k, v in opts.items() if k in
-                   ("grid", "beats_per_cut", "allow_reuse", "drop_blurry", "clip_from")})
+                   ("grid", "beats_per_cut", "allow_reuse", "drop_blurry",
+                    "clip_from", "match")})
     p.save()
     return p
 
@@ -1108,7 +1112,7 @@ def compare_project(project: Project, media: str, grids: tuple = DEFAULT_GRIDS,
     yield from compare(analysis, manifest, grids=grids, out_dir=project.dir,
                        beats_per_cut=project.beats_per_cut,
                        allow_reuse=project.allow_reuse, drop_blurry=project.drop_blurry,
-                       clip_from=project.clip_from, cancel=cancel)
+                       clip_from=project.clip_from, match=project.match, cancel=cancel)
 
 
 def render_project(project: Project,

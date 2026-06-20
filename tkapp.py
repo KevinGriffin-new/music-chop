@@ -438,6 +438,7 @@ class ArrangeOptions(tk.Toplevel):
         self.v_reuse = tk.BooleanVar(value=init.get("allow_reuse", False))
         self.v_blur = tk.DoubleVar(value=init.get("drop_blurry", 0.0))
         self.v_clip = tk.StringVar(value=init.get("clip_from", "middle"))
+        self.v_match = tk.StringVar(value=init.get("match", "energy"))
 
         pad = dict(padx=8, pady=4)
         gf = ttk.LabelFrame(self, text="Cut grid")
@@ -467,6 +468,13 @@ class ArrangeOptions(tk.Toplevel):
             ttk.Radiobutton(cf, text=v, value=v,
                             variable=self.v_clip).pack(side="left", padx=8, pady=1)
 
+        mf = ttk.LabelFrame(self, text="Match")
+        mf.pack(fill="x", **pad)
+        for val, desc in (("energy", "clips track the song's energy"),
+                          ("contrast", "also alternate brightness between cuts")):
+            ttk.Radiobutton(mf, text=f"{val} — {desc}", value=val,
+                            variable=self.v_match).pack(anchor="w", fill="x", padx=8, pady=1)
+
         bar = ttk.Frame(self)
         bar.pack(fill="x", **pad)
         ttk.Button(bar, text="Arrange", command=self._ok).pack(side="right", padx=4)
@@ -489,7 +497,8 @@ class ArrangeOptions(tk.Toplevel):
                 "beats_per_cut": int(self.v_bpc.get()),
                 "allow_reuse": bool(self.v_reuse.get()),
                 "drop_blurry": float(self.v_blur.get()),
-                "clip_from": self.v_clip.get()}
+                "clip_from": self.v_clip.get(),
+                "match": self.v_match.get()}
 
     def _ok(self) -> None:
         p = self.params()

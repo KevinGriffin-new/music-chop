@@ -359,7 +359,7 @@ def api_analyze(track: str):
 @app.get("/api/arrange")
 def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
                 allow_reuse: bool = False, drop_blurry: float = 0.0,
-                clip_from: str = "middle", project: str = ""):
+                clip_from: str = "middle", match: str = "energy", project: str = ""):
     job_id, cancel = _new_job()
     if project:
         # arrange within the project: (re)point it at the requested track (the
@@ -367,8 +367,8 @@ def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
         p = engine.load_project(MEDIA, project)
         if track:
             p.track = track
-        (p.grid, p.beats_per_cut, p.allow_reuse, p.drop_blurry, p.clip_from) = (
-            grid, beats_per_cut, allow_reuse, drop_blurry, clip_from)
+        (p.grid, p.beats_per_cut, p.allow_reuse, p.drop_blurry, p.clip_from,
+         p.match) = (grid, beats_per_cut, allow_reuse, drop_blurry, clip_from, match)
         p.save()
         return _sse(engine.arrange_project(p, MEDIA, cancel=cancel),
                     cancel=cancel, job_id=job_id)
@@ -376,7 +376,7 @@ def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
                             f"{os.path.splitext(track)[0]}.analysis.json")
     return _sse(engine.arrange(analysis, MANIFEST, grid=grid,
                                beats_per_cut=beats_per_cut, allow_reuse=allow_reuse,
-                               drop_blurry=drop_blurry, clip_from=clip_from,
+                               drop_blurry=drop_blurry, clip_from=clip_from, match=match,
                                cut_dir=os.path.join(MEDIA, "cuts"), cancel=cancel),
                 cancel=cancel, job_id=job_id)
 
@@ -384,7 +384,7 @@ def api_arrange(track: str = "", grid: str = "sections", beats_per_cut: int = 4,
 @app.get("/api/compare")
 def api_compare(track: str = "", beats_per_cut: int = 4, allow_reuse: bool = False,
                 drop_blurry: float = 0.0, clip_from: str = "middle",
-                project: str = "", grid: str = ""):
+                match: str = "energy", project: str = "", grid: str = ""):
     """Arrange the track across all grids and stream a ranked comparison. `grid`
     is accepted but ignored (compare sweeps every grid)."""
     job_id, cancel = _new_job()
@@ -392,8 +392,8 @@ def api_compare(track: str = "", beats_per_cut: int = 4, allow_reuse: bool = Fal
         p = engine.load_project(MEDIA, project)
         if track:
             p.track = track
-        (p.beats_per_cut, p.allow_reuse, p.drop_blurry, p.clip_from) = (
-            beats_per_cut, allow_reuse, drop_blurry, clip_from)
+        (p.beats_per_cut, p.allow_reuse, p.drop_blurry, p.clip_from, p.match) = (
+            beats_per_cut, allow_reuse, drop_blurry, clip_from, match)
         p.save()
         return _sse(engine.compare_project(p, MEDIA, cancel=cancel),
                     cancel=cancel, job_id=job_id)
@@ -401,8 +401,8 @@ def api_compare(track: str = "", beats_per_cut: int = 4, allow_reuse: bool = Fal
                             f"{os.path.splitext(track)[0]}.analysis.json")
     return _sse(engine.compare(analysis, MANIFEST, beats_per_cut=beats_per_cut,
                                allow_reuse=allow_reuse, drop_blurry=drop_blurry,
-                               clip_from=clip_from, cut_dir=os.path.join(MEDIA, "cuts"),
-                               cancel=cancel),
+                               clip_from=clip_from, match=match,
+                               cut_dir=os.path.join(MEDIA, "cuts"), cancel=cancel),
                 cancel=cancel, job_id=job_id)
 
 
