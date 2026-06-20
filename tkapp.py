@@ -701,6 +701,7 @@ class App(tk.Tk):
         self.active = 0          # number of running stages
         self._pb_frac = None     # last known fraction (None => indeterminate)
         self._pb_pos = 0         # sweep position for the indeterminate animation
+        self._pb_running = False  # is the animation loop currently scheduled?
 
         # the log is the "console" — give it the fixed SGI shell font
         self.log = tk.Text(self, height=10, font=pick_irix_font(set(tkfont.families(self))),
@@ -709,7 +710,8 @@ class App(tk.Tk):
 
         self._refresh_lib_label()
         self.after(100, self._drain)
-        self.after(60, self._pb_tick)
+        # the progress animation only runs while a stage is in flight (see
+        # _pb_start/_begin) — no idle 60ms canvas churn to compete with input.
         self.after(150, self._ensure_media)   # prompt for a library if none is set
 
     # ── progress bar (drawn on a Canvas; classic look, always moving) ───────
@@ -717,6 +719,7 @@ class App(tk.Tk):
         self.active += 1
         self._pb_frac = None
         self.cancel_btn.config(state="normal")     # a stage is in flight → armed
+        self._pb_start()                           # wake the animation loop
 
     def _end(self) -> None:
         self.active = max(0, self.active - 1)
@@ -725,14 +728,27 @@ class App(tk.Tk):
             self._cancel = None
             self.cancel_btn.config(state="disabled")
 
+    def _pb_start(self) -> None:
+        """Start the progress animation if it isn't already running."""
+        if not self._pb_running:
+            self._pb_running = True
+            self._pb_tick()
+
     def _pb_tick(self) -> None:
+        # Idle: clear the bar once and STOP rescheduling — a 60ms canvas redraw
+        # loop running while nothing's happening competes with macOS input
+        # handling and makes buttons feel like they need a firmer press.
+        if not self.active:
+            self.pb.delete("fill")
+            self._pb_running = False
+            return
         self.pb.delete("fill")
         w = self.pb.winfo_width()
         h = int(self.pb["height"])
-        if self.active and self._pb_frac is not None:                 # determinate
+        if self._pb_frac is not None:                                 # determinate
             self.pb.create_rectangle(0, 0, int(w * self._pb_frac), h,
                                      fill="#5b9dff", width=0, tags="fill")
-        elif self.active:                                             # indeterminate sweep
+        else:                                                         # indeterminate sweep
             cw = max(40, int(w * 0.22))
             x = (self._pb_pos % (w + cw)) - cw
             self.pb.create_rectangle(x, 0, x + cw, h, fill="#5b9dff",
