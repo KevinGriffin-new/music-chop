@@ -11,6 +11,21 @@ this writes an interchange timeline that Resolve imports:
   * <track>[-tag].otio     OpenTimelineIO (portable interchange)
   * <track>[-tag].fcpxml   FCP X XML (the most reliable import into Resolve)
 
+Both are verified to import into DaVinci Resolve (Studio 21). Two things matter
+for a clean import, both handled here:
+  * Source timecode. These clips are PySceneDetect splits that carry the
+    capture's tape timecode, so each clip's first frame sits at a non-zero TC.
+    Resolve indexes an in-point in the source's *timecode* space, so every
+    in-point is offset by the clip's embedded TC (read via ffprobe) — a 0-based
+    in-point on such a clip lands before the media and Resolve refuses the whole
+    timeline. ffmpeg/ffprobe on PATH is needed for this; without it clips fall
+    back to a 0 TC (fine only for clips whose TC is already 00:00:00:00).
+  * Frame rate. The FCPXML declares its own <format>, so it always builds a
+    timeline at the arrangement's fps regardless of project settings. The OTIO
+    has no equivalent — Resolve builds it at the *project's current* timeline
+    frame rate and conforms — so set the project to the arrangement's fps
+    (arrange.json timeline.fps) before importing the .otio, or use the .fcpxml.
+
 The timeline is two tracks:
   V1  one clip per cut slot, trimmed to the slot's source in-point + duration
       (read straight from order-sync-<track>.csv — no recompute, so the trims
@@ -32,6 +47,8 @@ import argparse
 import csv
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -48,20 +65,121 @@ def _url(path):
     return Path(os.path.abspath(path)).as_uri()
 
 
+def _tc_to_frames(tc, nominal_fps):
+    """SMPTE timecode 'HH:MM:SS:FF' -> integer frame count at nominal_fps (the
+    media's own rate base — e.g. 30 for 29.97, 60 for 59.94). A ';' or '.' before
+    the frame field flags drop-frame, which we compensate. 0 if unparseable."""
+    parts = re.split(r"[:;.]", tc.strip())
+    if len(parts) != 4:
+        return 0
+    try:
+        hh, mm, ss, ff = (int(p) for p in parts)
+    except ValueError:
+        return 0
+    frames = ((hh * 60 + mm) * 60 + ss) * round(nominal_fps) + ff
+    if ";" in tc or "." in tc:                 # drop-frame: 2 frames dropped per
+        total_min = hh * 60 + mm               # minute, except every 10th minute
+        frames -= 2 * (total_min - total_min // 10)
+    return frames
+
+
+_TC_CACHE = {}
+
+
+def _source_tc_string(path):
+    """Embedded start timecode string of a source clip ('' if none).
+
+    PySceneDetect splits inherit the capture's tape timecode, so each clip's
+    first frame sits at a non-zero TC. Both exporters offset their in-points by
+    it (Resolve indexes the source in timecode space; a 0-based in-point on a
+    non-zero-TC clip lands before the media exists and the import is rejected).
+    Cached per path; missing ffprobe or no timecode degrades to ''."""
+    key = os.path.abspath(path)
+    if key in _TC_CACHE:
+        return _TC_CACHE[key]
+    tc = ""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format_tags=timecode:stream_tags=timecode",
+             "-of", "default=nw=1:nk=1", key],
+            capture_output=True, text=True, timeout=30).stdout
+        for line in out.splitlines():
+            if line.strip():
+                tc = line.strip()
+                break
+    except (OSError, subprocess.SubprocessError):
+        tc = ""
+    _TC_CACHE[key] = tc
+    return tc
+
+
+def _source_tc_seconds(path, fps):
+    """Start timecode in seconds at the timeline fps (for the FCPXML path)."""
+    return _tc_to_frames(_source_tc_string(path), fps) / fps
+
+
+_FPS_CACHE = {}
+
+
+def _source_media_fps(path):
+    """True frame rate of a source clip (e.g. 29.97 for NTSC), or None if it has
+    no video stream / ffprobe is unavailable. Cached per path."""
+    key = os.path.abspath(path)
+    if key in _FPS_CACHE:
+        return _FPS_CACHE[key]
+    rate = None
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate",
+             "-of", "default=nw=1:nk=1", key],
+            capture_output=True, text=True, timeout=30).stdout.strip()
+        if "/" in out:
+            n, d = out.split("/")
+            rate = float(n) / float(d) if float(d) else None
+        elif out:
+            rate = float(out)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        rate = None
+    _FPS_CACHE[key] = rate
+    return rate
+
+
 def _clip(name, src_path, in_s, dur_s, avail_s, fps):
     """One OTIO clip: an external media ref with the clip's full available range,
-    source-trimmed to [in_s, in_s+dur_s). Times are snapped to whole frames at
-    fps (sub-frame drift across clips is editorial slack, conformed on import).
-    The media reference is named (the file's basename) so the imported media pool
-    shows real clip names rather than blanks."""
+    source-trimmed to [in_s, in_s+dur_s).
+
+    Media-side times (the available range and the source in-point) are expressed
+    at the clip's TRUE frame rate (mfps), anchored at its start timecode (tc) —
+    Resolve reads the real media's rate + TC when conforming OTIO, so declaring
+    them at the timeline fps instead drifts the in-point (it can even go negative,
+    trimming the head). The in-point also rides on tc because Resolve indexes the
+    source in timecode space. The media reference is named (the file's basename)
+    so the imported media pool shows real clip names rather than blanks."""
+    mfps = _source_media_fps(src_path) or fps
+    # The available range uses the media's true rate, but only when it shares the
+    # timeline's nominal base (e.g. 29.97 under a 30 timeline) — otherwise the TC
+    # frame count and the timeline-rate source range disagree and the clip lands
+    # out of its own available range, which aborts the import. Odd-rate clips
+    # (e.g. 59.94) fall back to the timeline rate so their ranges stay consistent.
+    if round(mfps) != round(fps):
+        mfps = float(fps)
+    tcf = _tc_to_frames(_source_tc_string(src_path), round(mfps))  # TC frames at media rate
     mr = otio.schema.ExternalReference(
-        target_url=_url(src_path),
-        available_range=TimeRange(RationalTime(0, fps),
-                                  RationalTime(round(max(avail_s, dur_s) * fps), fps)))
+        # Resolve's OTIO importer resolves media by plain filesystem path; a
+        # file:// URL (what FCPXML wants) makes it drop every clip and fail the
+        # whole import. So OTIO gets the absolute path, not _url().
+        target_url=os.path.abspath(src_path),
+        available_range=TimeRange(RationalTime(tcf, mfps),
+                                  RationalTime(round(max(avail_s, dur_s) * mfps), mfps)))
     mr.name = os.path.basename(src_path)
+    # source_range stays at the timeline fps (Resolve's own OTIO export does the
+    # same: available_range carries the media rate, source_range the timeline
+    # rate). start = TC frame count + the in-point; duration = the slot.
     return otio.schema.Clip(
         name=name, media_reference=mr,
-        source_range=TimeRange(RationalTime(round(in_s * fps), fps),
+        source_range=TimeRange(RationalTime(tcf + round(in_s * fps), fps),
                                RationalTime(round(dur_s * fps), fps)))
 
 
@@ -72,7 +190,10 @@ def build_timeline(meta, rows):
     fps = float(tl_meta.get("fps") or 30)
     tag = meta.get("tag") or ""
     name = f"{meta['track']}-{tag}" if tag else meta["track"]
-    tl = otio.schema.Timeline(name=name)
+    # Resolve's OTIO importer wants a global_start_time at the timeline fps;
+    # without it the timeline is built at the project's current rate.
+    tl = otio.schema.Timeline(name=name,
+                              global_start_time=RationalTime(0, fps))
     video = otio.schema.Track(name="V1", kind=otio.schema.TrackKind.Video)
     audio = otio.schema.Track(name="A1", kind=otio.schema.TrackKind.Audio)
     tl.tracks.append(video)
@@ -127,10 +248,15 @@ def build_fcpxml(meta, rows) -> str:
             continue
         aid = f"r{len(asset_id) + 2}"
         asset_id[p] = aid
-        dur = t(r.get("clip_src_dur_s") or r["slot_dur_s"])
+        # Available media spans [tc, tc+duration]; declare a duration that covers
+        # the source-trimmed segment so the in-point never falls past the end.
+        src_dur = float(r.get("clip_src_dur_s") or r["slot_dur_s"])
+        used_out = float(r.get("clip_in_s") or 0) + float(r["slot_dur_s"])
+        dur = t(max(src_dur, used_out))
+        start = t(_source_tc_seconds(p, fps))
         resources.append(
             f'    <asset id="{aid}" name="{_attr(os.path.splitext(os.path.basename(p))[0])}" '
-            f'src="{_attr(_url(p))}" start="0s" duration="{dur}" '
+            f'src="{_attr(_url(p))}" start="{start}" duration="{dur}" '
             f'hasVideo="1" hasAudio="0" format="r1"/>')
 
     music = meta.get("music")
@@ -149,14 +275,20 @@ def build_fcpxml(meta, rows) -> str:
         p = os.path.abspath(r["clip"])
         name = _attr(os.path.splitext(os.path.basename(p))[0])
         dur, instart = float(r["slot_dur_s"]), float(r.get("clip_in_s") or 0)
+        # in-point lives in the source's timecode space (start = tc + in-point)
+        instart += _source_tc_seconds(p, fps)
         open_tag = (f'<asset-clip ref="{asset_id[p]}" name="{name}" '
                     f'offset="{t(off)}" start="{t(instart)}" duration="{t(dur)}" format="r1"')
         if i == 0 and audio_id:
             mname = _attr(os.path.splitext(os.path.basename(music))[0])
+            # A connected clip's offset is in the PARENT clip's source-time frame,
+            # so to sit at the parent's timeline position its offset must equal the
+            # parent's source in-point (t(instart)), not 0 — otherwise the music
+            # lands at (parent_pos - parent_start), i.e. far into negative time.
             spine.append(
                 f'            {open_tag}>\n'
                 f'              <asset-clip ref="{audio_id}" name="{mname}" lane="-1" '
-                f'offset="0s" start="0s" duration="{t(song)}" audioRole="music"/>\n'
+                f'offset="{t(instart)}" start="0s" duration="{t(song)}" audioRole="music"/>\n'
                 f'            </asset-clip>')
         else:
             spine.append(f'            {open_tag}/>')
