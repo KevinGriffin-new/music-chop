@@ -361,7 +361,9 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     tag = meta.get("tag") or ""
     sfx = f"-{tag}" if tag else ""
-    stem = f"{meta['track']}{sfx}"
+    # the exported timelines are deliverables — dash the filename rather than
+    # carry the track's spaces (the embedded project/timeline name keeps them).
+    stem = re.sub(r"\s+", "-", f"{meta['track']}{sfx}")
 
     wrote = []
     for f in formats:

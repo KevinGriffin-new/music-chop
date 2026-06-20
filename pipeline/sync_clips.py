@@ -241,14 +241,17 @@ def main():
             w.writerow([round(a, 3), f"cut{si}"])
 
     # 4) ffmpeg render script: trim each clip to its slot, concat, add music
+    # the rendered cut is a deliverable, so its filename uses dashes (not the
+    # track's spaces); the .sh keeps the plain name (engine finds it by glob).
+    safe = re.sub(r"\s+", "-", track)
     render = os.path.join(out_dir, f"render-{track}{sfx}.sh")
-    cut_path = os.path.join(cut_dir, f"cut-{track}{sfx}.mp4")
+    cut_path = os.path.join(cut_dir, f"cut-{safe}{sfx}.mp4")
     nseg = len(assignments)
     # one segment + concat + mux -> total progress steps the engine can parse
     ntotal = nseg + 2
     with open(render, "w") as fh:
         fh.write("#!/usr/bin/env bash\nset -euo pipefail\n")
-        fh.write(f'# dv2mv render — cut-{track}{sfx}.mp4\n')
+        fh.write(f'# dv2mv render — cut-{safe}{sfx}.mp4\n')
         fh.write(f'# arrange: grid={args.grid} beats_per_cut={args.beats_per_cut} '
                  f'allow_reuse={args.allow_reuse} drop_blurry={args.drop_blurry} '
                  f'clip_from={args.clip_from} match={args.match} '
@@ -312,7 +315,7 @@ def main():
             "labels": os.path.basename(labels),
             "markers": os.path.basename(markers),
             "render_sh": os.path.basename(render),
-            "cut": f"cut-{track}{sfx}.mp4",
+            "cut": f"cut-{safe}{sfx}.mp4",
             "cut_path": cut_path,
         },
     }
