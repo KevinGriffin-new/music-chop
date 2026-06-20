@@ -54,7 +54,10 @@ from typing import Callable, Iterator, Optional
 # keeps the code a small, version-controlled project independent of the media.
 HERE = os.path.dirname(os.path.abspath(__file__))
 PIPELINE = os.path.join(HERE, "pipeline")
-MEDIA = os.path.abspath(os.environ.get("DV2MV_MEDIA", os.getcwd()))
+# Was DV2MV_MEDIA actually set, or did we fall back to the cwd? The front ends
+# use this to tell "you forgot to set it" from "you set it to the repo".
+MEDIA_FROM_ENV = bool(os.environ.get("DV2MV_MEDIA"))
+MEDIA = os.path.abspath(os.environ.get("DV2MV_MEDIA") or os.getcwd())
 
 SCRIPT = {
     "features": os.path.join(PIPELINE, "clip_features.py"),
@@ -115,6 +118,36 @@ def _check_cancel(cancel: CancelToken, stage: str) -> None:
     launching the next subprocess after a cancel."""
     if cancel is not None and cancel.is_set():
         raise Cancelled(f"{stage}: cancelled")
+
+
+# ── media-root guard (the classic "DV2MV_MEDIA unset" footgun) ──────────────
+def looks_like_code_checkout(path: str) -> bool:
+    """True if `path` is a dv2mv source tree (has engine.py + pipeline/) — i.e.
+    almost certainly NOT where media should live."""
+    return (os.path.isfile(os.path.join(path, "engine.py"))
+            and os.path.isdir(os.path.join(path, "pipeline")))
+
+
+def check_media_root(media: Optional[str] = None) -> None:
+    """Guard the classic DV2MV_MEDIA footgun. Media (footage, audio, render/
+    catalog outputs) lives OUTSIDE the repo; if the media root resolved to the
+    code checkout, every path points into the source tree — analyze fails with a
+    confusing "No such file" and stray catalog/ dirs get written into git.
+
+    Raise an actionable StageError instead of limping on. The front ends call
+    this at startup so the message names the real cause, not a downstream symptom.
+    """
+    media = media if media is not None else MEDIA
+    if not looks_like_code_checkout(media):
+        return
+    how = ("DV2MV_MEDIA is unset, so the media root defaulted to the current "
+           "directory") if not MEDIA_FROM_ENV else \
+          "DV2MV_MEDIA points at the code checkout"
+    raise StageError(
+        f"{how}:\n    {media}\n"
+        "But media (footage, audio, render/catalog outputs) must live OUTSIDE "
+        "the repo. Set it to your media folder and rerun, e.g.:\n"
+        "    export DV2MV_MEDIA=/Volumes/Footage/musicvideo")
 
 
 # ── subprocess plumbing shared by every stage ──────────────────────────────
@@ -931,6 +964,11 @@ def export_project(project: Project, media: str, formats: tuple = ("otio", "fcpx
 if __name__ == "__main__":
     # Minimal proof the core works: run the analyze stage on a track and print
     # the ProgressEvents. Usage: python3 engine.py "/path/to/02 Erased.mp3" [out_dir]
+    # Fail loud if the media root is the code checkout (DV2MV_MEDIA unset).
+    try:
+        check_media_root()
+    except StageError as exc:
+        sys.exit(str(exc))
     audio = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         MEDIA, "album-audio", "02 Erased.mp3")
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(MEDIA, "catalog_audio")

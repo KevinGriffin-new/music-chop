@@ -970,6 +970,12 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    # Fail loud (before opening a window) if the media root is the code checkout,
+    # i.e. DV2MV_MEDIA is unset — otherwise every stage points into the repo.
+    try:
+        engine.check_media_root()
+    except engine.StageError as exc:
+        sys.exit(str(exc))
     # Disable automatic cyclic GC: with worker threads, a collection firing on a
     # worker would finalize a Tk object off the main thread → Tcl_AsyncDelete
     # abort. We collect on the main thread from the UI pump (_drain) instead.

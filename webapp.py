@@ -114,6 +114,7 @@ def _sse(stage_gen, cancel=None, job_id=None) -> StreamingResponse:
     """
     def event_source():
         try:
+            engine.check_media_root()      # fail loud if MEDIA is the code checkout
             for ev in stage_gen:
                 payload = {"stage": ev.stage, "message": ev.message,
                            "frac": ev.frac, "done": ev.done, "result": ev.result,

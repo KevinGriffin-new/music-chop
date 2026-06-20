@@ -153,6 +153,35 @@ def test_catalog_propagates_cancel(tmp_path, monkeypatch):
     assert seen and all(not e.done for e in seen)   # never reached completion
 
 
+# ── pure: media-root guard (the DV2MV_MEDIA-unset footgun) ───────────────────
+def test_looks_like_code_checkout_detects_repo(tmp_path):
+    assert engine.looks_like_code_checkout(engine.HERE)        # the repo itself
+    assert not engine.looks_like_code_checkout(str(tmp_path))  # an empty dir
+
+
+def test_check_media_root_raises_when_media_is_checkout(monkeypatch):
+    """Unset DV2MV_MEDIA → media defaults to the repo → actionable error naming
+    the real cause (not a downstream 'No such file')."""
+    monkeypatch.setattr(engine, "MEDIA", engine.HERE)
+    monkeypatch.setattr(engine, "MEDIA_FROM_ENV", False)
+    with pytest.raises(engine.StageError) as ei:
+        engine.check_media_root()
+    msg = str(ei.value)
+    assert "DV2MV_MEDIA" in msg and "unset" in msg
+
+
+def test_check_media_root_message_differs_when_explicitly_set(monkeypatch):
+    monkeypatch.setattr(engine, "MEDIA", engine.HERE)
+    monkeypatch.setattr(engine, "MEDIA_FROM_ENV", True)
+    with pytest.raises(engine.StageError) as ei:
+        engine.check_media_root()
+    assert "points at the code checkout" in str(ei.value)
+
+
+def test_check_media_root_ok_for_real_media(tmp_path):
+    engine.check_media_root(str(tmp_path))   # not a checkout → no raise
+
+
 # ── pure: fail-loud verification ─────────────────────────────────────────────
 def test_require_passes_when_present(tmp_path):
     p = tmp_path / "x.csv"

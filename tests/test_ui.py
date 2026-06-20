@@ -249,6 +249,17 @@ def test_tkapp_has_compare_flow():
     assert hasattr(tkapp.App, "_compare_flow") and hasattr(tkapp.App, "_show_comparison")
 
 
+# ── media-root guard surfaces over the web tier ──────────────────────────────
+def test_media_guard_streams_actionable_error(client, monkeypatch):
+    """If the media root is the code checkout (DV2MV_MEDIA unset), a stage stream
+    surfaces an actionable error naming DV2MV_MEDIA — not a downstream symptom."""
+    monkeypatch.setattr(webapp.engine, "MEDIA", webapp.engine.HERE)
+    monkeypatch.setattr(webapp.engine, "MEDIA_FROM_ENV", False)
+    body = client.get("/api/analyze", params={"track": "x.mp3"}).text
+    assert ('"error": true' in body or '"error":true' in body)
+    assert "DV2MV_MEDIA" in body
+
+
 def test_tk_cancel_button_present_and_idle_safe(app):
     """Cancel is disabled while idle, and pressing it with nothing running is a
     safe no-op (must not raise or arm a phantom stop)."""

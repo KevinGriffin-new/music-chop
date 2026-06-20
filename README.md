@@ -37,7 +37,11 @@ are *not* in this repo. Point the engine at them with `DV2MV_MEDIA`:
 export DV2MV_MEDIA=/Volumes/Footage/musicvideo
 ```
 
-It defaults to the current working directory if unset.
+It defaults to the current working directory if unset — but the front ends
+**refuse to start** (and the CLI exits) with an actionable message if that
+default lands on the code checkout itself, since treating the repo as the media
+root silently writes outputs into the source tree and makes `analyze` fail with
+a confusing "No such file". Set it to your media folder and you're set.
 
 ## The stages
 

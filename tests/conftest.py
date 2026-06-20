@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -20,6 +21,12 @@ import pytest
 DV2MV_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if DV2MV_DIR not in sys.path:
     sys.path.insert(0, DV2MV_DIR)
+
+# Point the media root at a throwaway dir BEFORE importing engine (which reads
+# DV2MV_MEDIA at import). This keeps the suite hermetic — no test writes into the
+# checkout — and means engine.MEDIA never resolves to the repo, so the media-root
+# guard doesn't fire mid-test. (Honors an already-set DV2MV_MEDIA.)
+os.environ.setdefault("DV2MV_MEDIA", tempfile.mkdtemp(prefix="dv2mv-test-media-"))
 
 import engine  # noqa: E402
 
