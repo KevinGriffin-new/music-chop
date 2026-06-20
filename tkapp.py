@@ -230,8 +230,18 @@ class GalleryWindow(tk.Toplevel):
         self.count.pack(side="left", padx=4)
         ttk.Button(bar, text="Clear", command=self.clear_selection).pack(side="right", padx=2)
         ttk.Button(bar, text="Select all", command=self.select_all).pack(side="right", padx=2)
-        ttk.Button(bar, text=("Use selection" if on_apply else "New project from selection…"),
-                   command=self._apply).pack(side="right", padx=2)
+        if on_apply:
+            # editing a project: the current clips come up preselected; the three
+            # ops interpret the checked set as add/remove/replace against them
+            ttk.Button(bar, text="Replace",
+                       command=lambda: self._apply("replace")).pack(side="right", padx=2)
+            ttk.Button(bar, text="Remove ←",
+                       command=lambda: self._apply("remove")).pack(side="right", padx=2)
+            ttk.Button(bar, text="Add →",
+                       command=lambda: self._apply("add")).pack(side="right", padx=2)
+        else:
+            ttk.Button(bar, text="New project from selection…",
+                       command=lambda: self._apply()).pack(side="right", padx=2)
 
         body = tk.Frame(self, bg=IRIX["bg"])
         body.pack(fill="both", expand=True)
@@ -333,14 +343,14 @@ class GalleryWindow(tk.Toplevel):
         hint = "" if n else " — click to select, double-click to play"
         self.count.config(text=f"{self._total} clips · {n} selected{hint}")
 
-    def _apply(self) -> None:
+    def _apply(self, op: str = "replace") -> None:
         clips = sorted(self.selected)
         if not clips:
             messagebox.showinfo("dv2mv — gallery",
                                 "Select some clips first (click thumbnails).")
             return
         if self._on_apply:
-            self._on_apply(clips)
+            self._on_apply(clips, op)
             self.destroy()
         else:
             self.destroy()
@@ -942,12 +952,17 @@ class App(tk.Tk):
         on_apply = self._set_project_clips if self.project else None
         GalleryWindow(self, manifest, on_apply=on_apply, preselect=preselect)
 
-    def _set_project_clips(self, clips) -> None:
-        self.project.clips = clips
+    def _set_project_clips(self, clips, op: str = "replace") -> None:
+        manifest = os.path.join(engine.MEDIA, "catalog", "manifest.csv")
+        lib = engine.all_catalog_clips(manifest)
+        self.project.clips = engine.revise_clip_selection(
+            self.project.clips, clips, op, lib)
         self.project.save()
         self._set_project(self.project)        # refresh the count in the label
+        n = (self.project.clips if self.project.clips == "all"
+             else f"{len(self.project.clips)} clips")
         self.log.insert("end",
-                        f"[project] {self.project.name}: footage set to {len(clips)} clips\n")
+                        f"[project] {self.project.name}: {op} → {n}\n")
         self.log.see("end")
 
     # ── main-thread UI pump ────────────────────────────────────────────────

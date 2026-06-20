@@ -114,6 +114,11 @@ back to a mono family:
 cp assets/fonts/IrixScreenMono15*.ttf ~/Library/Fonts/    # macOS
 ```
 
+With a project open, the gallery edits its footage by **add / remove / replace**
+(the project's current clips come up preselected): the checked thumbnails are
+added to, removed from, or replace the project's selection — rather than only
+wholesale-replacing it. The web gallery offers the same via a project dropdown.
+
 The Tk gallery opens a clicked clip in the OS default app. If that's not a
 player (e.g. a tag editor owns `.mp4`), force one with `DV2MV_PLAYER`:
 

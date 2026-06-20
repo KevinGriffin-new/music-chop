@@ -641,6 +641,35 @@ def test_manifest_sources(smoke_manifest):
     assert src and all(isinstance(v, list) and v for v in src.values())
 
 
+def test_all_catalog_clips(smoke_manifest):
+    clips = engine.all_catalog_clips(smoke_manifest)
+    assert clips and clips == sorted(clips)
+    assert engine.all_catalog_clips("/nope/manifest.csv") == []   # absent → empty
+
+
+def test_revise_clip_selection_ops():
+    cur = ["/a.mp4", "/b.mp4"]
+    assert engine.revise_clip_selection(cur, ["/c.mp4"], "add") == \
+        ["/a.mp4", "/b.mp4", "/c.mp4"]
+    assert engine.revise_clip_selection(cur, ["/a.mp4"], "remove") == ["/b.mp4"]
+    assert engine.revise_clip_selection(cur, ["/x.mp4", "/y.mp4"], "replace") == \
+        ["/x.mp4", "/y.mp4"]
+    assert engine.revise_clip_selection(cur, ["/a.mp4"], "add") == cur   # union, no dup
+    with pytest.raises(engine.StageError):
+        engine.revise_clip_selection(cur, ["/z.mp4"], "frobnicate")
+
+
+def test_revise_clip_selection_all_and_collapse():
+    lib = ["/a.mp4", "/b.mp4", "/c.mp4"]
+    # remove from "all" expands the library then subtracts
+    assert engine.revise_clip_selection("all", ["/b.mp4"], "remove", lib) == \
+        ["/a.mp4", "/c.mp4"]
+    # add to "all" stays "all" (selection ⊆ library)
+    assert engine.revise_clip_selection("all", ["/a.mp4"], "add", lib) == "all"
+    # a selection covering the whole library collapses back to "all"
+    assert engine.revise_clip_selection(["/a.mp4"], lib, "replace", lib) == "all"
+
+
 def test_list_audio_tracks(tmp_path):
     aa = tmp_path / "album-audio"
     aa.mkdir()

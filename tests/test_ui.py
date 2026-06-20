@@ -315,6 +315,50 @@ def test_tk_lib_label_shows_current_media(app):
     assert "Library:" in app.lib_label.cget("text")
 
 
+# ── gallery "use selection" add/remove/replace ───────────────────────────────
+def test_edit_project_clips_add_remove_replace(client, tmp_path, monkeypatch):
+    import engine
+    monkeypatch.setattr(webapp, "MEDIA", str(tmp_path))
+    engine.new_project(str(tmp_path), "P", "t.mp3", clips=["/a.mp4", "/b.mp4"])
+    r = client.post("/api/projects/P/clips", data={"op": "add", "clips": ["/c.mp4"]})
+    assert r.status_code == 200 and r.json()["clips"] == 3
+    r = client.post("/api/projects/P/clips", data={"op": "remove", "clips": ["/a.mp4"]})
+    assert r.json()["clips"] == 2
+    r = client.post("/api/projects/P/clips", data={"op": "replace", "clips": ["/z.mp4"]})
+    assert r.json()["clips"] == 1
+    # the change persisted to the project on disk
+    assert engine.load_project(str(tmp_path), "P").clips == ["/z.mp4"]
+
+
+def test_edit_project_clips_unknown_project_404(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "MEDIA", str(tmp_path))
+    r = client.post("/api/projects/nope/clips", data={"op": "add", "clips": ["/a.mp4"]})
+    assert r.status_code == 404
+
+
+def test_gallery_layer_has_edit_controls(client, smoke_manifest, monkeypatch):
+    monkeypatch.setattr(webapp, "MANIFEST", smoke_manifest)
+    html = client.get("/api/gallery").text
+    assert "peditsel" in html and "_editProject" in html
+    assert "/clips" in html                       # posts to the edit endpoint
+
+
+def test_tk_set_project_clips_add_remove_replace(app, tmp_path):
+    import engine
+    p = engine.Project(name="P", track="t.mp3", clips=["/a.mp4", "/b.mp4"],
+                       dir=str(tmp_path / "p"))
+    app._set_project(p)
+    try:
+        app._set_project_clips(["/c.mp4"], op="add")
+        assert set(app.project.clips) == {"/a.mp4", "/b.mp4", "/c.mp4"}
+        app._set_project_clips(["/a.mp4"], op="remove")
+        assert set(app.project.clips) == {"/b.mp4", "/c.mp4"}
+        app._set_project_clips(["/z.mp4"], op="replace")
+        assert app.project.clips == ["/z.mp4"]
+    finally:
+        app._set_project(None)                    # leave the shared app clean
+
+
 # ── media-root guard surfaces over the web tier ──────────────────────────────
 def test_media_guard_streams_actionable_error(client, monkeypatch):
     """If the media root is the code checkout (DV2MV_MEDIA unset), a stage stream
@@ -535,7 +579,7 @@ def test_tk_gallery_selection_and_apply(app, smoke_manifest):
     import tkapp
     applied = {}
     g = tkapp.GalleryWindow(app, smoke_manifest,
-                            on_apply=lambda c: applied.update(clips=c))
+                            on_apply=lambda c, op: applied.update(clips=c, op=op))
     try:
         for _ in range(80):                 # pump the chunked loader to completion
             app.update()
@@ -554,8 +598,8 @@ def test_tk_gallery_selection_and_apply(app, smoke_manifest):
         assert g.selected == set()
         for c in picks:
             g.toggle(c)
-        g._apply()                          # on_apply gets the sorted selection (destroys g)
-        assert applied["clips"] == sorted(picks)
+        g._apply("add")                     # on_apply gets (sorted selection, op); destroys g
+        assert applied["clips"] == sorted(picks) and applied["op"] == "add"
     finally:
         if g.winfo_exists():
             g.destroy()

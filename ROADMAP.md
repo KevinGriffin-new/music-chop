@@ -5,8 +5,8 @@ the **bug tracker** (https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv), which
 is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
 ## Next
-- **Gallery "Use selection" semantics** — currently replaces a project's clips
-  wholesale; consider an add/remove mode.
+- **Web E2E tests** with Playwright (the web tier is a real web app; server-side
+  is already covered by FastAPI TestClient).
 
 ## Bigger features
 - **Export polish.** The export stage ships (OTIO + FCPXML, below). Follow-ups
@@ -14,8 +14,6 @@ is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
   format (OTIO's cmx3600 adapter), and a UI toggle for which formats to write.
 
 ## Later
-- **Web E2E tests** with Playwright (the web tier is a real web app; server-side
-  is already covered by FastAPI TestClient).
 - **Packaging** — bundle the Tk tier as a double-click app (PyInstaller/py2app;
   the pain is librosa/numba/opencv/scenedetect + a bundled ffmpeg, and macOS
   codesigning/notarization). The web tier ships from a venv.
@@ -44,4 +42,7 @@ carried forward — so adding a tape doesn't re-process the whole library);
 as the media root with an actionable message; both UIs have a Media library
 control to choose the folder at runtime, remembered in `~/.config/dv2mv`;
 precedence DV2MV_MEDIA env > saved choice > cwd);
+**gallery add/remove/replace** (editing a project's footage in the gallery is
+now an explicit union/difference/replace — `revise_clip_selection()` — not just
+a wholesale replace; both tiers);
 MPL-2.0; on sr.ht.

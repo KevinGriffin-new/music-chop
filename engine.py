@@ -949,6 +949,44 @@ def manifest_sources(library_manifest: str) -> dict:
     return out
 
 
+def all_catalog_clips(library_manifest: str) -> list:
+    """Flat sorted list of every clip path in the library manifest (empty if
+    absent). Used to expand a project's "all" selection for add/remove math."""
+    if not os.path.exists(library_manifest):
+        return []
+    with open(library_manifest, newline="") as fh:
+        return sorted(r["clip"] for r in csv.DictReader(fh) if r.get("clip"))
+
+
+def revise_clip_selection(current, selection, op, library_clips=None):
+    """Compute a project's new clip set from a gallery `selection` and an `op`:
+
+      replace  -> the selection itself
+      add      -> current ∪ selection
+      remove   -> current − selection
+
+    `current` is a list of clip paths or "all" (the whole library); add/remove
+    expand "all" via `library_clips`. Returns a sorted list — or "all" when the
+    result spans the entire library (kept simple, and so a project tracks new
+    footage). Paths are compared by absolute path so picker/manifest forms match.
+    """
+    sel = {os.path.abspath(c) for c in selection}
+    lib = {os.path.abspath(c) for c in (library_clips or [])}
+    if op == "replace":
+        result = set(sel)
+    else:
+        base = lib if current == "all" else {os.path.abspath(c) for c in current}
+        if op == "add":
+            result = base | sel
+        elif op == "remove":
+            result = base - sel
+        else:
+            raise StageError(f"unknown selection op: {op!r}")
+    if lib and result == lib:
+        return "all"
+    return sorted(result)
+
+
 def write_scoped_manifest(library_manifest: str, clips, out_path: str) -> str:
     """Return a manifest restricted to `clips`. If clips is "all"/empty, the
     library manifest is used as-is; otherwise a subset is written to out_path."""

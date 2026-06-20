@@ -234,6 +234,12 @@ _GALLERY_SELECT_LAYER = r"""
   <input id=pname placeholder="project name">
   <input id=ptrack placeholder="track e.g. 02 Erased.mp3">
   <button id=pcreate>Create project from selection</button>
+  <span style="opacity:.5">|</span>
+  edit:
+  <select id=peditsel><option value="">— pick a project —</option></select>
+  <button id=padd>Add →</button>
+  <button id=premove>Remove ←</button>
+  <button id=preplace>Replace</button>
   <span id=selmsg style="color:#8a93a0"></span>
 </div>
 <script>
@@ -264,6 +270,36 @@ document.getElementById('pcreate').addEventListener('click', async () => {
   msg.textContent = r.ok ? `created '${(await r.json()).name}' (${_sel.size} clips) — switch to the main tab`
                          : 'failed: ' + await r.text();
 });
+
+// populate the edit-project dropdown
+(async () => {
+  const sel = document.getElementById('peditsel');
+  const j = await (await fetch('/api/projects')).json();
+  for (const p of j.projects){
+    const o = document.createElement('option');
+    o.value = p.name; o.textContent = `${p.name} (${p.clips} clips)`;
+    sel.appendChild(o);
+  }
+})();
+
+async function _editProject(op){
+  const msg = document.getElementById('selmsg');
+  const name = document.getElementById('peditsel').value;
+  if (!name){ msg.textContent = 'pick a project to edit'; return; }
+  if (!_sel.size){ msg.textContent = 'select some clips first'; return; }
+  const fd = new FormData();
+  fd.append('op', op);
+  _sel.forEach(c => fd.append('clips', c));
+  msg.textContent = op + 'ing…';
+  const r = await fetch('/api/projects/' + encodeURIComponent(name) + '/clips',
+                        {method:'POST', body:fd});
+  if (!r.ok){ msg.textContent = 'failed: ' + ((await r.json()).detail || ''); return; }
+  const j = await r.json();
+  msg.textContent = `${name}: ${op} → ${j.clips} clips`;
+}
+document.getElementById('padd').addEventListener('click', () => _editProject('add'));
+document.getElementById('premove').addEventListener('click', () => _editProject('remove'));
+document.getElementById('preplace').addEventListener('click', () => _editProject('replace'));
 </script>
 """
 
@@ -457,6 +493,25 @@ def api_create_project(name: str = Form(...), track: str = Form(...),
         picked = "all"
     p = engine.new_project(MEDIA, name.strip(), track.strip(), clips=picked)
     return {"name": p.name, "track": p.track,
+            "clips": (len(p.clips) if isinstance(p.clips, list) else "all")}
+
+
+@app.post("/api/projects/{name}/clips")
+def api_edit_project_clips(name: str, op: str = Form("replace"),
+                           clips: List[str] = Form(default=[])):
+    """Revise an existing project's clip selection from the gallery: op is
+    add (∪), remove (−), or replace."""
+    try:
+        p = engine.load_project(MEDIA, name)
+    except (OSError, ValueError):
+        raise HTTPException(404, f"no such project: {name}")
+    try:
+        p.clips = engine.revise_clip_selection(
+            p.clips, clips, op, engine.all_catalog_clips(MANIFEST))
+    except engine.StageError as exc:
+        raise HTTPException(400, str(exc))
+    p.save()
+    return {"name": p.name, "op": op,
             "clips": (len(p.clips) if isinstance(p.clips, list) else "all")}
 
 # The finished cut lives under CATALOG_AUDIO (inside MEDIA); the page plays it
