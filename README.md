@@ -57,6 +57,7 @@ a confusing "No such file".
 | detect  | `detect()`  | scenedetect            | `clips/*-Scene-*.mp4` |
 | catalog | `catalog()` | `clip_features.py`     | `manifest.csv`, `histograms.npz`, `thumbs/` |
 | analyze | `analyze()` | `track_analyze.py`     | `<track>.analysis.json` (+ `.png`) |
+| retempo | `retempo()` | Rubber Band R3 / ffmpeg `atempo` | `<track>-<bpm>bpm.wav` (pitch-preserved) |
 | arrange | `arrange()` | `sync_clips.py`        | `order-sync-*.csv`, labels, markers, `render-*.sh` |
 | render  | `render()`  | the generated `render-*.sh` | `cut-<track>.mp4` |
 | export  | `export()`  | `export_timeline.py`   | `<track>.otio`, `<track>.fcpxml` |
@@ -70,6 +71,14 @@ delivery). dv2mv decides the *cut*; Resolve *finishes* it.
 by energy match, so you can pick the scheme that best fits — each candidate's
 sidecars are left on disk, so the winner is ready to render or export. Both UIs
 have a "Compare grids" button; the winning grid is preselected afterward.
+
+**Retempo** (`retempo()`) time-stretches a track to a target BPM while
+preserving pitch, writing `<track>-<bpm>bpm.wav` as a new track you then Analyze
++ Arrange — handy for matching a reference's drive (a downbeats cut at a higher
+BPM cuts faster) without the chipmunk vocals of a plain speed-up. It uses Rubber
+Band's R3 engine when the `rubberband` CLI is installed (best on vocals) and
+falls back to ffmpeg `atempo` otherwise. The Tk app exposes it as a **Tempo…**
+slider, centered on the track's detected tempo (needs Analyze first).
 
 **Add footage is incremental** — `detect` skips sources already split, and
 `catalog(append=True)` feature-extracts only the clips not already in the
@@ -95,6 +104,8 @@ has a **Cancel** button that sets the worker's token.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # system binaries on PATH: ffmpeg, ffprobe, scenedetect
+# optional: rubberband  (R3 time-stretch for Retempo; falls back to ffmpeg atempo)
+#   macOS: brew install rubberband
 ```
 
 ## Run

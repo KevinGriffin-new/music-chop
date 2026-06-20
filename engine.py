@@ -39,6 +39,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -595,6 +596,78 @@ def analyze(
     except (OSError, ValueError, KeyError):
         pass
     yield ProgressEvent(st, msg, 1.0, True, result)
+
+
+# ── retempo (time-stretch a track to a target BPM, pitch-preserved) ─────────
+def _atempo_chain(factor: float) -> list:
+    """Split a tempo factor into ffmpeg atempo stages, each within its 0.5..2.0
+    range (atempo rejects values outside it, so large stretches must chain)."""
+    stages, f = [], factor
+    while f > 2.0:
+        stages.append(2.0); f /= 2.0
+    while f < 0.5:
+        stages.append(0.5); f /= 0.5
+    stages.append(f)
+    return stages
+
+
+def retempo(
+    audio: str,
+    target_bpm: float,
+    source_bpm: float,
+    out_dir: Optional[str] = None,
+    cancel: CancelToken = None,
+) -> Iterator[ProgressEvent]:
+    """Time-stretch a track to target_bpm, preserving pitch → <track>-<bpm>bpm.wav.
+
+    Uses Rubber Band's R3 engine when the `rubberband` CLI is installed (best
+    quality on vocals/transients), else falls back to ffmpeg's `atempo` (always
+    available; auto-chained so each stage stays in range). `source_bpm` is the
+    track's detected tempo (from analyze); the stretch factor is target/source.
+    The output is a normal track you then Analyze + Arrange.
+    """
+    st = "retempo"
+    if not os.path.exists(audio):
+        raise StageError(f"No such track: {audio}")
+    source_bpm, target_bpm = float(source_bpm), float(target_bpm)
+    if source_bpm <= 0:
+        raise StageError("Source tempo unknown — Analyze the track first.")
+    factor = target_bpm / source_bpm
+    if abs(factor - 1.0) < 1e-3:
+        raise StageError("Target tempo matches the source — nothing to stretch.")
+    out_dir = os.path.abspath(out_dir) if out_dir else os.path.dirname(os.path.abspath(audio))
+    os.makedirs(out_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(audio))[0]
+    out = os.path.join(out_dir, f"{stem}-{round(target_bpm)}bpm.wav")
+    use_rb = shutil.which("rubberband") is not None
+    eng = "Rubber Band R3" if use_rb else "ffmpeg atempo"
+    yield ProgressEvent(st, f"stretching {stem}: {source_bpm:.0f} → {round(target_bpm)} "
+                            f"BPM (×{factor:.3f}, {eng}) …", None)
+    tail: list = []
+    if use_rb:
+        # rubberband reads PCM (libsndfile), not mp3 — decode to a temp wav first.
+        tmp = os.path.join(out_dir, f".{stem}.retempo-src.wav")
+        for _ in _stream(["ffmpeg", "-nostdin", "-loglevel", "error", "-y",
+                          "-i", audio, "-ar", "44100", tmp], cwd=out_dir, cancel=cancel):
+            pass
+        cmd = ["rubberband", "-3", "--tempo", f"{source_bpm}:{target_bpm}", tmp, out]
+        for line in _stream(cmd, cwd=out_dir, cancel=cancel):
+            tail = (tail + [line])[-25:]
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    else:
+        af = ",".join(f"atempo={a:.6f}" for a in _atempo_chain(factor))
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", audio,
+               "-filter:a", af, "-ar", "44100", out]
+        for line in _stream(cmd, cwd=out_dir, cancel=cancel):
+            tail = (tail + [line])[-25:]
+    _require(st, {"out": out}, tail)
+    yield ProgressEvent(st, f"Stretched → {os.path.basename(out)}  (pitch preserved)",
+                        1.0, True, {"output": out, "factor": round(factor, 4),
+                                    "engine": "rubberband" if use_rb else "atempo",
+                                    "target_bpm": round(target_bpm)})
 
 
 # ── stage 4: arrange (sync clips to the track's structure) ─────────────────

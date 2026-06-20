@@ -36,6 +36,7 @@ Run:  python3 tkapp.py        (Tkinter ships with CPython)
 from __future__ import annotations
 
 import gc
+import json
 import os
 import platform
 import queue
@@ -364,6 +365,61 @@ class GalleryWindow(tk.Toplevel):
         super().destroy()
 
 
+class RetempoDialog(tk.Toplevel):
+    """IRIX-styled modal: a BPM slider to time-stretch a track (pitch-preserved).
+
+    Centered on the track's detected tempo, ranges 0.5×..2.0×; on_ok(target_bpm)
+    is called only when the target differs from the source — the App then spawns
+    engine.retempo followed by engine.analyze on the stretched variant.
+    """
+    def __init__(self, master, src_bpm, on_ok) -> None:
+        super().__init__(master)
+        self.title("Retempo")
+        self.on_ok = on_ok
+        apply_irix_theme(self)
+        self.configure(bg=IRIX["bg"])
+        self.src = float(src_bpm)
+        lo, hi = max(40, round(self.src * 0.5)), round(self.src * 2.0)
+        pad = dict(padx=10, pady=6)
+
+        ttk.Label(self, text=f"Source tempo: {self.src:.0f} BPM   "
+                             "(stretch is pitch-preserved)").pack(anchor="w", **pad)
+        self.readout = ttk.Label(self, text="")
+        self.readout.pack(anchor="w", padx=10)
+        self.scale = ttk.Scale(self, from_=lo, to=hi, orient="horizontal",
+                               command=self._on_move, length=320)
+        self.scale.set(round(self.src))
+        self.scale.pack(fill="x", **pad)
+        rng = ttk.Frame(self)
+        rng.pack(fill="x", padx=10)
+        ttk.Label(rng, text=f"{lo}").pack(side="left")
+        ttk.Label(rng, text=f"{hi}").pack(side="right")
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", **pad)
+        ttk.Button(bar, text="Retempo", command=self._ok).pack(side="right", padx=4)
+        ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right")
+
+        self._on_move(round(self.src))
+        self.transient(master)
+        self.grab_set()
+        self.bind("<Return>", lambda e: self._ok())
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.after(20, self.focus_force)
+
+    def _on_move(self, val) -> None:
+        bpm = round(float(val))
+        pct = (bpm / self.src - 1.0) * 100 if self.src else 0
+        same = " — no change" if abs(bpm - self.src) < 1 else ""
+        self.readout.config(text=f"Target: {bpm} BPM  ({pct:+.0f}%){same}")
+
+    def _ok(self) -> None:
+        bpm = round(float(self.scale.get()))
+        self.destroy()
+        if abs(bpm - self.src) >= 1:
+            self.on_ok(bpm)
+
+
 class ArrangeOptions(tk.Toplevel):
     """IRIX-styled modal dialog for the arrange knobs.
 
@@ -609,6 +665,7 @@ class App(tk.Tk):
         ttk.Label(src, text="Add:").pack(side="left", padx=4)
         ttk.Button(src, text="Music track…", command=self.add_track).pack(side="left", padx=4)
         ttk.Button(src, text="Video footage…", command=self.add_footage).pack(side="left", padx=4)
+        ttk.Button(src, text="Tempo…", command=self.open_retempo).pack(side="left", padx=4)
         ttk.Button(src, text="Gallery…", command=self.open_gallery).pack(side="right", padx=4)
 
         btns = ttk.Frame(self, padding=(6, 4))
@@ -915,6 +972,49 @@ class App(tk.Tk):
         cat = os.path.join(engine.MEDIA, "catalog_audio")
         self.status.config(text=f"analyzing {os.path.basename(path)} …")
         self._spawn(lambda c: engine.analyze(path, cat, plot=True, cancel=c))
+
+    def open_retempo(self) -> None:
+        """Time-stretch the current track to a target BPM (pitch-preserved), then
+        analyze the variant so it's ready to Arrange. Needs the track analyzed
+        first (we read its detected tempo to stretch from)."""
+        track = self.track.get().strip()
+        if not track:
+            messagebox.showinfo("dv2mv — tempo", "Pick a track first.")
+            return
+        stem = os.path.splitext(track)[0]
+        cat = os.path.join(engine.MEDIA, "catalog_audio")
+        try:
+            with open(os.path.join(cat, f"{stem}.analysis.json")) as fh:
+                src_bpm = float(json.load(fh).get("tempo_bpm") or 0)
+        except (OSError, ValueError):
+            src_bpm = 0.0
+        if src_bpm <= 0:
+            messagebox.showinfo(
+                "dv2mv — tempo",
+                f"Analyze '{stem}' first — I need its detected tempo to stretch from.")
+            return
+
+        def go(target_bpm: float) -> None:
+            audio = os.path.join(engine.MEDIA, "album-audio", track)
+            out_name = f"{stem}-{round(target_bpm)}bpm.wav"
+            # point the Track box at the variant now; Analyze writes its sidecar
+            self.track.delete(0, "end")
+            self.track.insert(0, out_name)
+            self.status.config(
+                text=f"retempo {round(src_bpm)} → {round(target_bpm)} BPM …")
+
+            def chain(c):
+                out = None
+                for ev in engine.retempo(audio, target_bpm, src_bpm,
+                                         out_dir=os.path.dirname(audio), cancel=c):
+                    if ev.done:
+                        out = (ev.result or {}).get("output")
+                    yield ev
+                if out:                                  # analyze the stretched track
+                    yield from engine.analyze(out, cat, plot=True, cancel=c)
+            self._spawn(chain)
+
+        RetempoDialog(self, src_bpm, go)
 
     def add_footage(self) -> None:
         """Pick one or more videos, scene-split them, then (re)build the catalog."""
