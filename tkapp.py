@@ -665,7 +665,8 @@ class App(tk.Tk):
         row.pack(fill="x", padx=6, pady=6)
         ttk.Label(row, text="Track:").pack(side="left", padx=4)
         self.track = ttk.Entry(row)
-        self.track.insert(0, "02 Erased.mp3")
+        # start empty: a hardcoded default made it look like a track was selected
+        # (and got inherited as a new project's track) when none had been chosen.
         self.track.pack(side="left", fill="x", expand=True, padx=4)
 
         # ── add new media via native file dialogs ──────────────────────────
@@ -1000,27 +1001,43 @@ class App(tk.Tk):
 
     def open_retempo(self) -> None:
         """Time-stretch the current track to a target BPM (pitch-preserved), then
-        analyze the variant so it's ready to Arrange. Needs the track analyzed
-        first (we read its detected tempo to stretch from)."""
+        analyze the variant so it's ready to Arrange. Refuses unless there's a
+        real, analyzed track — the slider needs the detected tempo AND an actual
+        audio file to stretch (the Track box alone can show a stale name)."""
         track = self.track.get().strip()
         if not track:
-            messagebox.showinfo("dv2mv — tempo", "Pick a track first.")
+            messagebox.showinfo("dv2mv — tempo",
+                                "No track selected — add one with “Music track…” first.")
             return
         stem = os.path.splitext(track)[0]
         cat = os.path.join(engine.MEDIA, "catalog_audio")
         try:
             with open(os.path.join(cat, f"{stem}.analysis.json")) as fh:
-                src_bpm = float(json.load(fh).get("tempo_bpm") or 0)
+                an = json.load(fh)
         except (OSError, ValueError):
-            src_bpm = 0.0
-        if src_bpm <= 0:
+            an = None
+        src_bpm = float((an or {}).get("tempo_bpm") or 0)
+        if not an or src_bpm <= 0:
             messagebox.showinfo(
                 "dv2mv — tempo",
-                f"Analyze '{stem}' first — I need its detected tempo to stretch from.")
+                f"No analyzed track named “{stem}”.\n\n"
+                "Add a music track (“Music track…”) and Analyze it before retempo — "
+                "the tempo slider needs a real, analyzed audio file to stretch.")
+            return
+        # the analysis records the actual audio file it was run on; that's what
+        # we stretch. If it's absent the Track box is showing a name with no
+        # audio behind it — refuse rather than deceptively opening the slider.
+        audio = an.get("path") or ""
+        if not audio or not os.path.exists(audio):
+            messagebox.showinfo(
+                "dv2mv — tempo",
+                f"The audio file for “{stem}” can’t be found"
+                + (f":\n{audio}" if audio else ".")
+                + "\n\nAdd and Analyze a music track before retempo.")
             return
 
         def go(target_bpm: float) -> None:
-            audio = os.path.join(engine.MEDIA, "album-audio", track)
+            out_dir = os.path.join(engine.MEDIA, "album-audio")
             out_name = f"{stem}-{round(target_bpm)}bpm.wav"
             # point the Track box at the variant now; Analyze writes its sidecar
             self.track.delete(0, "end")
@@ -1031,7 +1048,7 @@ class App(tk.Tk):
             def chain(c):
                 out = None
                 for ev in engine.retempo(audio, target_bpm, src_bpm,
-                                         out_dir=os.path.dirname(audio), cancel=c):
+                                         out_dir=out_dir, cancel=c):
                     if ev.done:
                         out = (ev.result or {}).get("output")
                     yield ev
@@ -1072,8 +1089,17 @@ class App(tk.Tk):
                 "dv2mv — gallery",
                 "No catalog yet — add footage (Video footage…) to build it first.")
             return
-        preselect = (self.project.clips if self.project
-                     and isinstance(self.project.clips, list) else None)
+        # Reflect the project's saved scope in the gallery. A clip list comes up
+        # highlighted; an "all" scope means the whole library is in scope, so
+        # show *everything* selected — otherwise an all-scope project (the
+        # default, and what "Add →" leaves you with) opened to an empty-looking
+        # gallery, as if the selection had vanished.
+        if self.project is None:
+            preselect = None
+        elif isinstance(self.project.clips, list):
+            preselect = self.project.clips
+        else:                                       # "all"
+            preselect = engine.all_catalog_clips(manifest)
         on_apply = self._set_project_clips if self.project else None
         GalleryWindow(self, manifest, on_apply=on_apply, preselect=preselect)
 
