@@ -45,15 +45,18 @@ RENDER_W, RENDER_H, RENDER_FPS = 720, 480, 30
 
 # Feature-weighting presets for the clip↔slot cost. 'motion' is the clip's
 # motion energy matched to the song's energy envelope (loud=action), as always.
-# 'luma' weights a *contrast* term — a penalty for a clip whose brightness
-# matches the PREVIOUS cut's — so cuts collide light↔dark instead of fatiguing
-# the eye with a long bright/dark stretch. (Brightness deliberately does NOT
-# track the beat: measured on reference videos like Firestarter, frame
-# brightness has ~zero correlation with the music's energy; its value is the
-# alternation.) 'energy' (default) reproduces the original motion-only behavior.
+# 'luma' and 'hue' weight *contrast* terms — penalties for a clip whose
+# brightness / dominant hue matches the PREVIOUS cut's — so successive cuts
+# collide light↔dark and warm↔cool instead of fatiguing the eye with a long
+# uniform stretch. (Brightness/colour deliberately do NOT track the beat:
+# measured on reference videos like Firestarter, frame brightness has ~zero
+# correlation with the music's energy; their value is the alternation.)
+# 'energy' (default) reproduces the original motion-only behavior; 'contrast'
+# adds brightness alternation; 'variety' adds colour alternation on top.
 MATCH_PRESETS = {
-    "energy":   {"motion": 1.0, "luma": 0.0},
-    "contrast": {"motion": 1.0, "luma": 0.5},
+    "energy":   {"motion": 1.0, "luma": 0.0, "hue": 0.0},
+    "contrast": {"motion": 1.0, "luma": 0.5, "hue": 0.0},
+    "variety":  {"motion": 1.0, "luma": 0.5, "hue": 0.4},
 }
 
 
@@ -74,6 +77,7 @@ def load_manifest(path):
         for r in csv.DictReader(fh):
             r["motion_energy"] = float(r.get("motion_energy") or 0)
             r["mean_luma"] = float(r.get("mean_luma") or 0)
+            r["hue_deg"] = float(r.get("hue_deg") or 0)
             r["duration_s"] = float(r.get("duration_s") or 0)
             r["sharpness"] = float(r.get("sharpness") or 0)
             rows.append(r)
@@ -112,6 +116,12 @@ def _norm(values):
     return (a - a.min()) / (a.max() - a.min()) if a.max() > a.min() else np.zeros_like(a)
 
 
+def _hue_dist(h1, h2):
+    """Circular distance between two hues (degrees) -> 0..1 (0=same, 1=opposite)."""
+    d = abs(float(h1) - float(h2)) % 360.0
+    return min(d, 360.0 - d) / 180.0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Sync clips to a track.")
     ap.add_argument("--analysis", required=True, help="track .analysis.json")
@@ -127,12 +137,15 @@ def main():
                     help="where in a long clip to take the slot-length piece")
     ap.add_argument("--match", default="energy", choices=list(MATCH_PRESETS),
                     help="feature-weighting preset: 'energy' (motion↔song energy, "
-                         "default, original behavior) or 'contrast' (also alternate "
-                         "brightness between adjacent cuts to fight viewer fatigue)")
+                         "default, original behavior), 'contrast' (also alternate "
+                         "brightness between adjacent cuts), or 'variety' (alternate "
+                         "brightness AND colour) to fight viewer fatigue")
     ap.add_argument("--w-motion", type=float, default=None,
                     help="override the motion↔energy weight (default from --match)")
     ap.add_argument("--w-luma", type=float, default=None,
                     help="override the luma-contrast weight (default from --match)")
+    ap.add_argument("--w-hue", type=float, default=None,
+                    help="override the hue-variety weight (default from --match)")
     ap.add_argument("--tag", default="",
                     help="suffix for output names so different grids don't "
                          "overwrite each other (e.g. order-sync-<track>-<tag>.csv)")
@@ -155,10 +168,12 @@ def main():
         sys.exit("No slots — does the analysis have the chosen grid points?")
 
     # normalize clip features + slot energy onto 0..1 so the weighted terms are
-    # comparable. motion ↔ the song's energy envelope; luma feeds a *contrast*
-    # term (alternation vs the previous cut), not an energy match — see MATCH_PRESETS.
+    # comparable. motion ↔ the song's energy envelope; luma/hue feed *contrast*
+    # terms (alternation vs the previous cut), not an energy match — see
+    # MATCH_PRESETS. hue stays in degrees (compared circularly), not min-maxed.
     cm_n = _norm([c["motion_energy"] for c in clips])
     luma_n = _norm([c["mean_luma"] for c in clips])
+    hue = [c["hue_deg"] for c in clips]
     targets = np.array([energy_at(an, a, b) for a, b in slots])
 
     # resolve feature weights: a preset, with optional per-feature overrides
@@ -167,14 +182,20 @@ def main():
         wt["motion"] = args.w_motion
     if args.w_luma is not None:
         wt["luma"] = args.w_luma
+    if args.w_hue is not None:
+        wt["hue"] = args.w_hue
 
     # cost of putting clip i in this slot: motion-vs-energy distance, plus (when
-    # w_luma>0) a penalty for matching the PREVIOUS cut's brightness so adjacent
-    # cuts collide light↔dark. Sequential by construction (greedy, slot by slot).
+    # weighted) penalties for matching the PREVIOUS cut's brightness/hue so
+    # adjacent cuts collide light↔dark and warm↔cool. Sequential by construction
+    # (greedy, slot by slot).
     def cost(i, tgt, prev):
         c = wt["motion"] * abs(cm_n[i] - tgt)
-        if prev is not None and wt["luma"]:
-            c += wt["luma"] * (1.0 - abs(luma_n[i] - luma_n[prev]))
+        if prev is not None:
+            if wt["luma"]:
+                c += wt["luma"] * (1.0 - abs(luma_n[i] - luma_n[prev]))
+            if wt["hue"]:
+                c += wt["hue"] * (1.0 - _hue_dist(hue[i], hue[prev]))
         return c
 
     # greedy assignment: each slot takes the available clip minimizing the cost
@@ -205,11 +226,14 @@ def main():
     # yardstick stays motion-only so it's comparable across --match strategies
     matchpct = 100 * (1 - np.mean([abs(cm_n[i] - tgt)
                                    for _, _, _, _, tgt, i in assignments]))
-    # mean brightness jump between adjacent cuts (0..1) — what 'contrast'
-    # optimizes; reported so energy vs contrast can be A/B'd by the numbers.
+    # mean brightness / hue jump between adjacent cuts (0..1) — what 'contrast'
+    # and 'variety' optimize; reported so strategies can be A/B'd by the numbers.
     chosen = [i for _, _, _, _, _, i in assignments]
     luma_contrast = (float(np.mean(np.abs(np.diff(luma_n[chosen]))))
                      if len(chosen) > 1 else 0.0)
+    hue_variety = (float(np.mean([_hue_dist(hue[chosen[k]], hue[chosen[k - 1]])
+                                  for k in range(1, len(chosen))]))
+                   if len(chosen) > 1 else 0.0)
 
     # 1) order csv — includes the source in-point + clip source duration so a
     #    timeline export (FCPXML/OTIO) has exact trims without recomputing them.
@@ -218,13 +242,14 @@ def main():
         w = csv.writer(fh)
         w.writerow(["slot", "song_start_s", "song_end_s", "slot_dur_s",
                     "target_energy", "clip_motion_norm", "clip",
-                    "clip_in_s", "clip_src_dur_s", "clip_luma_norm"])
+                    "clip_in_s", "clip_src_dur_s", "clip_luma_norm", "clip_hue_deg"])
         for si, a, b, d, tgt, i in assignments:
             cdur = clips[i]["duration_s"]
             ss = clip_in_point(cdur, d, args.clip_from)
             w.writerow([si, round(a, 3), round(b, 3), round(d, 3),
                         round(tgt, 3), round(float(cm_n[i]), 3), clips[i]["clip"],
-                        round(ss, 3), round(cdur, 3), round(float(luma_n[i]), 3)])
+                        round(ss, 3), round(cdur, 3), round(float(luma_n[i]), 3),
+                        round(float(hue[i]), 1)])
 
     # 2) Audacity label track  (start \t end \t label)
     labels = os.path.join(out_dir, f"{track}{sfx}.labels.txt")
@@ -255,7 +280,8 @@ def main():
         fh.write(f'# arrange: grid={args.grid} beats_per_cut={args.beats_per_cut} '
                  f'allow_reuse={args.allow_reuse} drop_blurry={args.drop_blurry} '
                  f'clip_from={args.clip_from} match={args.match} '
-                 f'w_motion={wt["motion"]} w_luma={wt["luma"]} tag={tag or "(none)"}\n')
+                 f'w_motion={wt["motion"]} w_luma={wt["luma"]} w_hue={wt["hue"]} '
+                 f'tag={tag or "(none)"}\n')
         fh.write(f'# {len(assignments)} cuts · ~{matchpct:.0f}% energy match · '
                  f'{an["tempo_bpm"]:.0f} BPM {an["key"]}\n')
         fh.write('TMP="$(mktemp -d)"\n')
@@ -295,7 +321,7 @@ def main():
         "drop_blurry": args.drop_blurry,
         "clip_from": args.clip_from,
         "match": args.match,
-        "weights": {"motion": wt["motion"], "luma": wt["luma"]},
+        "weights": {"motion": wt["motion"], "luma": wt["luma"], "hue": wt["hue"]},
         "analysis": os.path.abspath(args.analysis),
         "manifest": os.path.abspath(args.manifest),
         "music": an.get("path"),                 # the audio laid under the cut
@@ -307,6 +333,7 @@ def main():
         "clips": len(clips),
         "energy_match_pct": round(float(matchpct), 1),
         "luma_contrast": round(luma_contrast, 3),
+        "hue_variety": round(hue_variety, 3),
         # timeline geometry the render normalizes to — an editable-timeline
         # export must match it so the trims land on the same frames.
         "timeline": {"fps": RENDER_FPS, "width": RENDER_W, "height": RENDER_H},
@@ -326,8 +353,9 @@ def main():
     print(f"Synced {len(assignments)} cuts to '{track}' "
           f"({an['tempo_bpm']:.0f} BPM, {an['key']}) on the {args.grid} grid")
     print(f"  energy match: ~{matchpct:.0f}%   slots: {len(slots)}   clips: {len(clips)}")
-    print(f"  match: {args.match} (w_motion={wt['motion']}, w_luma={wt['luma']})   "
-          f"luma contrast: {luma_contrast:.3f}")
+    print(f"  match: {args.match} (w_motion={wt['motion']}, w_luma={wt['luma']}, "
+          f"w_hue={wt['hue']})   luma contrast: {luma_contrast:.3f}   "
+          f"hue variety: {hue_variety:.3f}")
     print(f"  order:   {order_csv}")
     print(f"  labels:  {labels}   (Audacity: File > Import > Labels)")
     print(f"  markers: {markers}")

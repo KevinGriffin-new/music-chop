@@ -471,7 +471,8 @@ class ArrangeOptions(tk.Toplevel):
         mf = ttk.LabelFrame(self, text="Match")
         mf.pack(fill="x", **pad)
         for val, desc in (("energy", "clips track the song's energy"),
-                          ("contrast", "also alternate brightness between cuts")):
+                          ("contrast", "also alternate brightness between cuts"),
+                          ("variety", "alternate brightness and colour")):
             ttk.Radiobutton(mf, text=f"{val} — {desc}", value=val,
                             variable=self.v_match).pack(anchor="w", fill="x", padx=8, pady=1)
 
