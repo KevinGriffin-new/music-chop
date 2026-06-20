@@ -249,6 +249,72 @@ def test_tkapp_has_compare_flow():
     assert hasattr(tkapp.App, "_compare_flow") and hasattr(tkapp.App, "_show_comparison")
 
 
+# ── media library picker (switch the media root at runtime) ──────────────────
+@pytest.fixture
+def restore_media():
+    """Snapshot + restore the media-derived globals so a set_media() test can't
+    leak its tmp paths into other tests."""
+    keys = ("MEDIA", "CATALOG_AUDIO", "CATALOG", "MANIFEST", "ALBUM_AUDIO",
+            "SOURCES", "CLIPS")
+    saved = {k: getattr(webapp, k) for k in keys}
+    saved_engine = (webapp.engine.MEDIA, webapp.engine.MEDIA_SOURCE)
+    yield
+    for k, v in saved.items():
+        setattr(webapp, k, v)
+    webapp.engine.MEDIA, webapp.engine.MEDIA_SOURCE = saved_engine
+
+
+def test_api_media_get_reports_current(client):
+    j = client.get("/api/media").json()
+    assert "media" in j and "ok" in j and "source" in j
+
+
+def test_api_media_set_switches_and_recomputes_paths(client, tmp_path, monkeypatch,
+                                                     restore_media):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    r = client.post("/api/media", data={"path": str(lib)})
+    assert r.status_code == 200 and r.json()["media"] == str(lib)
+    # the derived globals followed the switch
+    assert webapp.MEDIA == str(lib)
+    assert webapp.CATALOG == os.path.join(str(lib), "catalog")
+    assert client.get("/api/media").json()["media"] == str(lib)
+
+
+def test_api_media_rejects_checkout(client, restore_media):
+    r = client.post("/api/media", data={"path": webapp.engine.HERE})
+    assert r.status_code == 400 and "DV2MV_MEDIA" in r.json()["detail"]
+
+
+def test_index_has_media_library_control(client):
+    html = client.get("/").text
+    assert "setMedia()" in html and "id=medianow" in html and "/api/media" in html
+
+
+def test_catalog_files_route_serves_thumb(client, tmp_path, monkeypatch):
+    """The gallery's thumbs/ load via this route (replaced the static mount, so
+    the catalog can change at runtime)."""
+    cat = tmp_path / "catalog"
+    (cat / "thumbs").mkdir(parents=True)
+    (cat / "thumbs" / "a.jpg").write_bytes(b"JPEGDATA")
+    monkeypatch.setattr(webapp, "CATALOG", str(cat))
+    r = client.get("/catalog-files/thumbs/a.jpg")
+    assert r.status_code == 200 and r.content == b"JPEGDATA"
+    assert client.get("/catalog-files/thumbs/missing.jpg").status_code == 404
+
+
+def test_tkapp_has_media_library_controls():
+    pytest.importorskip("tkinter")
+    import tkapp
+    for attr in ("choose_media", "_ensure_media", "_refresh_lib_label"):
+        assert hasattr(tkapp.App, attr), attr
+
+
+def test_tk_lib_label_shows_current_media(app):
+    assert "Library:" in app.lib_label.cget("text")
+
+
 # ── media-root guard surfaces over the web tier ──────────────────────────────
 def test_media_guard_streams_actionable_error(client, monkeypatch):
     """If the media root is the code checkout (DV2MV_MEDIA unset), a stage stream

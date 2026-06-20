@@ -571,6 +571,14 @@ class App(tk.Tk):
         ttk.Label(self, text="dv2mv — offline", anchor="center", relief="raised",
                   borderwidth=2, padding=4, font=title_font).pack(fill="x")
 
+        # ── media library (the root all media/outputs live under) ───────────
+        lib = ttk.Frame(self, padding=4)
+        lib.pack(fill="x", padx=6, pady=(6, 0))
+        self.lib_label = ttk.Label(lib, text="Library: …")
+        self.lib_label.pack(side="left", padx=4)
+        ttk.Button(lib, text="Media library…",
+                   command=self.choose_media).pack(side="right", padx=4)
+
         proj = ttk.Frame(self, padding=4)
         proj.pack(fill="x", padx=6, pady=(6, 0))
         self.proj_label = ttk.Label(proj, text="Project: (none — library mode)")
@@ -623,8 +631,10 @@ class App(tk.Tk):
                            bg="black", fg="#33ff33", relief="sunken", bd=2)  # green-on-black
         self.log.pack(fill="both", expand=True, padx=6, pady=6)
 
+        self._refresh_lib_label()
         self.after(100, self._drain)
         self.after(60, self._pb_tick)
+        self.after(150, self._ensure_media)   # prompt for a library if none is set
 
     # ── progress bar (drawn on a Canvas; classic look, always moving) ───────
     def _begin(self) -> None:
@@ -716,6 +726,39 @@ class App(tk.Tk):
             sh = sh or engine.find_render_script(cat, track) or os.path.join(
                 cat, f"render-{stem}.sh")
             self._spawn(lambda c: engine.render(sh, cancel=c))
+
+    # ── media library (the root all media/outputs live under) ───────────────
+    def _refresh_lib_label(self) -> None:
+        ok = not engine.looks_like_code_checkout(engine.MEDIA)
+        suffix = "" if ok else "   ⚠ not set — pick a folder"
+        self.lib_label.config(text=f"Library: {engine.MEDIA}{suffix}")
+
+    def choose_media(self) -> None:
+        """Pick the media library folder (remembered for next launch)."""
+        path = filedialog.askdirectory(title="Choose your dv2mv media library",
+                                       mustexist=True)
+        if not path:
+            return
+        try:
+            engine.set_media(path)            # validates, persists, updates MEDIA
+        except engine.StageError as exc:
+            messagebox.showwarning("dv2mv — media library", str(exc))
+            return
+        self._set_project(None)               # the old project belonged to old media
+        self._refresh_lib_label()
+        self.log.insert("end", f"[media] library set to {engine.MEDIA}\n")
+        self.log.see("end")
+
+    def _ensure_media(self) -> None:
+        """At startup, if no valid library is set (media resolved to the code
+        checkout), prompt for one instead of failing on the first stage."""
+        if not engine.looks_like_code_checkout(engine.MEDIA):
+            return
+        messagebox.showinfo(
+            "dv2mv — media library",
+            "No media library is set yet. Choose the folder that holds your "
+            "footage, audio, and outputs (it's remembered for next time).")
+        self.choose_media()
 
     # ── projects ────────────────────────────────────────────────────────────
     def _set_project(self, p) -> None:
@@ -970,12 +1013,9 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
-    # Fail loud (before opening a window) if the media root is the code checkout,
-    # i.e. DV2MV_MEDIA is unset — otherwise every stage points into the repo.
-    try:
-        engine.check_media_root()
-    except engine.StageError as exc:
-        sys.exit(str(exc))
+    # If the media root isn't set (resolved to the code checkout), the app
+    # prompts for a library at startup (App._ensure_media) rather than refusing
+    # to launch — so no DV2MV_MEDIA guard/exit here.
     # Disable automatic cyclic GC: with worker threads, a collection firing on a
     # worker would finalize a Tk object off the main thread → Tcl_AsyncDelete
     # abort. We collect on the main thread from the UI pump (_drain) instead.

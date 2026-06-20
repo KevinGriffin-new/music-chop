@@ -34,7 +34,6 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 
 import engine
 
@@ -45,17 +44,35 @@ from pipeline import clip_gallery   # noqa: E402  (reuse its HTML, don't fork it
 
 app = FastAPI(title="dv2mv (web)")
 
-MEDIA = engine.MEDIA          # media root (set DV2MV_MEDIA); not the code repo
-CATALOG_AUDIO = os.path.join(MEDIA, "catalog_audio")
-CATALOG = os.path.join(MEDIA, "catalog")
-MANIFEST = os.path.join(CATALOG, "manifest.csv")
-ALBUM_AUDIO = os.path.join(MEDIA, "album-audio")
-SOURCES = os.path.join(MEDIA, "sources")        # uploaded footage lands here
-CLIPS = os.path.join(MEDIA, "clips")
+# Media-derived paths. Kept as module globals so the endpoints (and tests that
+# monkeypatch them) stay simple; _apply_media() recomputes them when the library
+# changes at runtime via the in-app picker. Initial values come from engine.MEDIA
+# (which already applied env > saved-config > cwd).
+MEDIA = CATALOG_AUDIO = CATALOG = MANIFEST = ALBUM_AUDIO = SOURCES = CLIPS = ""
 
-# serve the catalog dir so the gallery's thumbs/ load over http
-os.makedirs(CATALOG, exist_ok=True)
-app.mount("/catalog-files", StaticFiles(directory=CATALOG), name="catalog")
+
+def _apply_media(media: str) -> None:
+    """(Re)derive the media-rooted path globals from `media`."""
+    global MEDIA, CATALOG_AUDIO, CATALOG, MANIFEST, ALBUM_AUDIO, SOURCES, CLIPS
+    MEDIA = media
+    CATALOG_AUDIO = os.path.join(MEDIA, "catalog_audio")
+    CATALOG = os.path.join(MEDIA, "catalog")
+    MANIFEST = os.path.join(CATALOG, "manifest.csv")
+    ALBUM_AUDIO = os.path.join(MEDIA, "album-audio")
+    SOURCES = os.path.join(MEDIA, "sources")        # uploaded footage lands here
+    CLIPS = os.path.join(MEDIA, "clips")
+
+
+_apply_media(engine.MEDIA)
+
+
+def set_media(path: str) -> str:
+    """Switch the web tier to a new media library (validated + persisted),
+    recomputing the path globals. Raises StageError on a bad folder."""
+    p = engine.set_media(path)        # validates, persists, updates engine.MEDIA
+    _apply_media(p)
+    return p
+
 
 FAVICON = os.path.join(engine.HERE, "assets", "icons", "favicon.ico")
 HERO = os.path.join(engine.HERE, "assets", "img", "cameraman.jpg")
@@ -263,6 +280,37 @@ def api_clip(path: str):
     return FileResponse(real)
 
 
+@app.get("/catalog-files/{relpath:path}")
+def catalog_files(relpath: str):
+    """Serve a file from the current catalog dir (the gallery's thumbs/ load via
+    this). A route, not a static mount, so the catalog can change at runtime when
+    the media library is switched. Guards against path traversal."""
+    full = os.path.realpath(os.path.join(CATALOG, relpath))
+    root = os.path.realpath(CATALOG)
+    if full != root and not full.startswith(root + os.sep):
+        raise HTTPException(403, "outside catalog")
+    if not os.path.isfile(full):
+        raise HTTPException(404, "not found")
+    return FileResponse(full)
+
+
+# ── media library (switch the media root at runtime; remembered in config) ───
+@app.get("/api/media")
+def api_media():
+    """Current media library + whether it's actually set (vs. the checkout)."""
+    return {"media": MEDIA, "source": engine.MEDIA_SOURCE,
+            "ok": not engine.looks_like_code_checkout(MEDIA)}
+
+
+@app.post("/api/media")
+def api_set_media(path: str = Form(...)):
+    """Point the app at a new media library (validated + remembered)."""
+    try:
+        return {"media": set_media(path)}
+    except engine.StageError as exc:
+        raise HTTPException(400, str(exc))
+
+
 # ── stage endpoints (each streams progress) ────────────────────────────────
 @app.get("/api/analyze")
 def api_analyze(track: str):
@@ -427,6 +475,18 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
   <h1 style="position:absolute;left:14px;bottom:6px;margin:0;color:#fff;
     font:600 24px system-ui;text-shadow:0 1px 5px #000">dv2mv</h1>
 </div>
+
+<fieldset style="margin-bottom:1rem">
+<legend>Media library</legend>
+<div style="margin:.3rem 0;font-size:13px">
+  current: <code id=medianow style="font-size:12px">…</code>
+</div>
+<div style="margin:.3rem 0">
+  <input id=mediapath placeholder="/Volumes/Footage/musicvideo" style="width:60%">
+  <button type=button onclick="setMedia()">Use this folder</button>
+  <div id=mediamsg style="font-size:11px;color:#a33;white-space:pre-line"></div>
+</div>
+</fieldset>
 
 <fieldset style="margin-bottom:1rem">
 <legend>Add media</legend>
@@ -681,7 +741,25 @@ function go(stage){
     url += `&project=${encodeURIComponent(activeProject)}`;   // scope to the project
   stream(url, stage, track);
 }
+async function loadMedia(){
+  const j = await (await fetch('/api/media')).json();
+  $('medianow').textContent = j.media + (j.ok ? '' : '  ⚠ not set — pick your library below');
+}
+
+async function setMedia(){
+  const path = $('mediapath').value.trim();
+  if (!path){ $('mediamsg').textContent = 'enter a folder path'; return; }
+  const fd = new FormData(); fd.append('path', path);
+  const r = await fetch('/api/media', {method:'POST', body:fd});
+  if (!r.ok){ $('mediamsg').textContent = '✗ ' + ((await r.json()).detail || 'failed'); return; }
+  $('mediamsg').textContent = ''; $('mediapath').value = '';
+  await loadMedia();
+  loadProjects(); loadSources(); loadTracks();   // re-read the new library
+  log('● media library set to ' + (await (await fetch('/api/media')).json()).media);
+}
+
 syncGrid();
+loadMedia();
 loadProjects();
 loadSources();
 loadTracks();

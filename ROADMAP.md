@@ -40,4 +40,8 @@ both UIs have a "Compare grids" button that preselects the winner);
 **incremental "Add footage"** (`catalog(append=True)` feature-extracts only the
 clips not already in the manifest and appends them — existing rows + histograms
 carried forward — so adding a tape doesn't re-process the whole library);
+**media-root guard + in-app library picker** (refuses to treat the code checkout
+as the media root with an actionable message; both UIs have a Media library
+control to choose the folder at runtime, remembered in `~/.config/dv2mv`;
+precedence DV2MV_MEDIA env > saved choice > cwd);
 MPL-2.0; on sr.ht.

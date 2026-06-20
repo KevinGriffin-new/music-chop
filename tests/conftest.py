@@ -27,6 +27,9 @@ if DV2MV_DIR not in sys.path:
 # checkout — and means engine.MEDIA never resolves to the repo, so the media-root
 # guard doesn't fire mid-test. (Honors an already-set DV2MV_MEDIA.)
 os.environ.setdefault("DV2MV_MEDIA", tempfile.mkdtemp(prefix="dv2mv-test-media-"))
+# Force the config dir to a throwaway too, so set_media()/save_config() during
+# tests never touch the user's real ~/.config/dv2mv.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="dv2mv-test-config-")
 
 import engine  # noqa: E402
 

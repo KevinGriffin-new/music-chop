@@ -182,6 +182,55 @@ def test_check_media_root_ok_for_real_media(tmp_path):
     engine.check_media_root(str(tmp_path))   # not a checkout → no raise
 
 
+# ── pure: config + runtime media switch (the in-app library picker) ──────────
+def test_config_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert engine.config_path().startswith(str(tmp_path))
+    engine.save_config({"media": "/x/y"})
+    assert engine.load_config() == {"media": "/x/y"}
+
+
+def test_set_media_validates_persists_and_updates(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setattr(engine, "MEDIA", "/old")          # pinned → restored at teardown
+    monkeypatch.setattr(engine, "MEDIA_SOURCE", "env")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    out = engine.set_media(str(lib))
+    assert out == str(lib) and engine.MEDIA == str(lib)
+    assert engine.load_config()["media"] == str(lib)      # remembered
+    # persist=False updates MEDIA but leaves the saved choice alone
+    other = tmp_path / "lib2"
+    other.mkdir()
+    engine.set_media(str(other), persist=False)
+    assert engine.MEDIA == str(other)
+    assert engine.load_config()["media"] == str(lib)      # unchanged
+
+
+def test_set_media_rejects_nonexistent_and_checkout(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setattr(engine, "MEDIA", engine.MEDIA)    # pin for restore
+    with pytest.raises(engine.StageError):
+        engine.set_media(str(tmp_path / "nope"))          # not a folder
+    with pytest.raises(engine.StageError):
+        engine.set_media(engine.HERE)                     # the code checkout
+
+
+def test_initial_media_precedence(tmp_path, monkeypatch):
+    """env > saved config > cwd."""
+    cfg = tmp_path / "cfg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg))
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    engine.save_config({"media": str(saved)})
+    # env wins
+    monkeypatch.setenv("DV2MV_MEDIA", str(tmp_path / "fromenv"))
+    assert engine._initial_media() == (str(tmp_path / "fromenv"), "env")
+    # no env → saved config
+    monkeypatch.delenv("DV2MV_MEDIA", raising=False)
+    assert engine._initial_media() == (str(saved), "config")
+
+
 # ── pure: fail-loud verification ─────────────────────────────────────────────
 def test_require_passes_when_present(tmp_path):
     p = tmp_path / "x.csv"

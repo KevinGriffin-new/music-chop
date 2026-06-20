@@ -54,10 +54,70 @@ from typing import Callable, Iterator, Optional
 # keeps the code a small, version-controlled project independent of the media.
 HERE = os.path.dirname(os.path.abspath(__file__))
 PIPELINE = os.path.join(HERE, "pipeline")
-# Was DV2MV_MEDIA actually set, or did we fall back to the cwd? The front ends
-# use this to tell "you forgot to set it" from "you set it to the repo".
-MEDIA_FROM_ENV = bool(os.environ.get("DV2MV_MEDIA"))
-MEDIA = os.path.abspath(os.environ.get("DV2MV_MEDIA") or os.getcwd())
+
+
+# ── config (remembers the chosen media library across launches) ─────────────
+def config_path() -> str:
+    """Path to the dv2mv config file (XDG-style; honors XDG_CONFIG_HOME)."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config")
+    return os.path.join(base, "dv2mv", "config.json")
+
+
+def load_config() -> dict:
+    try:
+        with open(config_path()) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg: dict) -> str:
+    path = config_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump(cfg, fh, indent=1)
+    return path
+
+
+def _initial_media() -> tuple:
+    """Resolve the media root at import. Precedence: DV2MV_MEDIA env var (for
+    CI/scripts) > the remembered choice in the config > the cwd (which the
+    media-root guard then catches if it's the checkout). Returns (path, source)."""
+    env = os.environ.get("DV2MV_MEDIA")
+    if env:
+        return os.path.abspath(env), "env"
+    saved = load_config().get("media")
+    if saved and os.path.isdir(saved):
+        return os.path.abspath(saved), "config"
+    return os.path.abspath(os.getcwd()), "cwd"
+
+
+MEDIA, MEDIA_SOURCE = _initial_media()
+# Was DV2MV_MEDIA actually set, or did we fall back? The guard uses this to tell
+# "you forgot to set it" from "you set it to the repo".
+MEDIA_FROM_ENV = MEDIA_SOURCE == "env"
+
+
+def set_media(path: str, persist: bool = True) -> str:
+    """Point the engine at a new media library at runtime (the in-app picker).
+
+    Validates the folder (must exist and not be the code checkout), updates the
+    module-level MEDIA, and — unless persist=False — remembers it in the config
+    so the next launch starts there. Returns the resolved path; raises StageError
+    on a bad choice so the UIs can surface it."""
+    global MEDIA, MEDIA_SOURCE
+    p = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isdir(p):
+        raise StageError(f"Not a folder: {p}")
+    check_media_root(p)                      # refuse the code checkout
+    MEDIA = p
+    MEDIA_SOURCE = "runtime"
+    if persist:
+        cfg = load_config()
+        cfg["media"] = p
+        save_config(cfg)
+    return p
 
 SCRIPT = {
     "features": os.path.join(PIPELINE, "clip_features.py"),
@@ -146,7 +206,8 @@ def check_media_root(media: Optional[str] = None) -> None:
     raise StageError(
         f"{how}:\n    {media}\n"
         "But media (footage, audio, render/catalog outputs) must live OUTSIDE "
-        "the repo. Set it to your media folder and rerun, e.g.:\n"
+        "the repo. Set it to your media folder — pick one in the app's Media "
+        "Library control, or set the env and rerun, e.g.:\n"
         "    export DV2MV_MEDIA=/Volumes/Footage/musicvideo")
 
 
