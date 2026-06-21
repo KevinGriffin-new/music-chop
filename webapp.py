@@ -399,9 +399,11 @@ def api_compare(track: str = "", beats_per_cut: int = 4, allow_reuse: bool = Fal
                     cancel=cancel, job_id=job_id)
     analysis = os.path.join(CATALOG_AUDIO,
                             f"{os.path.splitext(track)[0]}.analysis.json")
+    # compare sweeps every match strategy (energy/contrast/variety), so the
+    # single `match` query param isn't used here — like `grid`, it's ignored.
     return _sse(engine.compare(analysis, MANIFEST, beats_per_cut=beats_per_cut,
                                allow_reuse=allow_reuse, drop_blurry=drop_blurry,
-                               clip_from=clip_from, match=match,
+                               clip_from=clip_from,
                                cut_dir=os.path.join(MEDIA, "cuts"), cancel=cancel),
                 cancel=cancel, job_id=job_id)
 

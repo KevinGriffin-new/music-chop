@@ -140,6 +140,10 @@ GRID_HELP = {
 # the grids compare() sweeps by default (insertion order = display order)
 DEFAULT_GRIDS = tuple(GRID_HELP)
 
+# the match strategies compare() sweeps by default (energy yardstick + the two
+# anti-fatigue presets); mirrors sync_clips.MATCH_PRESETS keys.
+DEFAULT_MATCHES = ("energy", "contrast", "variety")
+
 
 # ── progress / error model ─────────────────────────────────────────────────
 @dataclass
@@ -770,23 +774,23 @@ def compare(
     analysis_json: str,
     manifest: str,
     grids: tuple = DEFAULT_GRIDS,
+    matches: tuple = DEFAULT_MATCHES,
     beats_per_cut: int = 4,
     allow_reuse: bool = False,
     drop_blurry: float = 0.0,
     clip_from: str = "middle",
-    match: str = "energy",
     out_dir: Optional[str] = None,
     cut_dir: Optional[str] = None,
     cancel: CancelToken = None,
 ) -> Iterator[ProgressEvent]:
-    """Arrange a track on several grids and rank them by energy match.
+    """Arrange a track across grid × match-strategy and tabulate the trade-offs.
 
-    Each grid is arranged in turn (writing its own tagged sidecars, so every
-    candidate cut survives to render/export), and its summary is collected into
-    a side-by-side table sorted best-match-first — so you can pick the scheme
-    that best fits the track's energy. A grid that fails becomes an error row
-    rather than aborting the whole sweep; the prerequisites are checked once up
-    front so a missing analysis/catalog gives one actionable message, not N.
+    Every (grid, match) cell is arranged in turn, tagged "<grid>-<match>" so all
+    candidate cuts survive to render/export, and its stats are collected into a
+    side-by-side table: the motion-only energy_match_pct is the common yardstick
+    (comparable across strategies), with luma_contrast / hue_variety showing what
+    the contrast/variety strategies buy. Ranked best-energy-first; a cell that
+    fails becomes an error row rather than aborting the sweep.
     """
     st = "compare"
     if not os.path.exists(analysis_json):
@@ -796,34 +800,42 @@ def compare(
         raise StageError("No clip catalog yet — add footage before comparing.")
 
     rows: list[dict] = []
-    total = len(grids)
-    for i, g in enumerate(grids):
+    combos = [(g, m) for g in grids for m in matches]
+    total = len(combos)
+    for i, (g, m) in enumerate(combos):
         _check_cancel(cancel, st)
-        yield ProgressEvent(st, f"arranging on the {g} grid …", i / total)
+        yield ProgressEvent(st, f"arranging {g} · {m} …", i / total)
+        tag = f"{g}-{m}"
         try:
             final: dict = {}
-            for ev in arrange(analysis_json, manifest, grid=g,
+            for ev in arrange(analysis_json, manifest, grid=g, match=m, tag=tag,
                               beats_per_cut=beats_per_cut, allow_reuse=allow_reuse,
-                              drop_blurry=drop_blurry, clip_from=clip_from, match=match,
+                              drop_blurry=drop_blurry, clip_from=clip_from,
                               out_dir=out_dir, cut_dir=cut_dir, cancel=cancel):
                 if ev.done:
                     final = ev.result
             s = final.get("summary") or {}
-            rows.append({"grid": g, "energy_match_pct": s.get("energy_match_pct"),
+            rows.append({"grid": g, "match": m, "tag": tag,
+                         "energy_match_pct": s.get("energy_match_pct"),
+                         "luma_contrast": s.get("luma_contrast"),
+                         "hue_variety": s.get("hue_variety"),
                          "cuts": s.get("cuts"), "clips": s.get("clips"),
                          "render_sh": final.get("render_sh"),
                          "options": final.get("options")})
         except StageError as exc:
-            rows.append({"grid": g, "energy_match_pct": None, "cuts": None,
-                         "clips": None, "error": str(exc)})
+            rows.append({"grid": g, "match": m, "tag": tag,
+                         "energy_match_pct": None, "luma_contrast": None,
+                         "hue_variety": None, "cuts": None, "clips": None,
+                         "error": str(exc)})
 
-    # rank best-match-first; rows that errored (None match) sort to the bottom
+    # rank best-energy-first; errored rows (None) sort to the bottom
     ranked = sorted(rows, key=lambda r: (r["energy_match_pct"] is not None,
                                          r["energy_match_pct"] or 0), reverse=True)
-    best = (ranked[0]["grid"] if ranked and ranked[0]["energy_match_pct"] is not None
-            else None)
-    msg = (f"Best fit: {best} ({ranked[0]['energy_match_pct']}% energy match)"
-           if best else "Compared grids (no successful arrangement).")
+    top = ranked[0] if ranked and ranked[0]["energy_match_pct"] is not None else None
+    best = top["tag"] if top else None              # a tag suffix Render/Export reuse
+    msg = (f"Best energy fit: {top['grid']} · {top['match']} "
+           f"({top['energy_match_pct']}%)" if top
+           else "Compared (no successful arrangement).")
     yield ProgressEvent(st, msg, 1.0, True,
                         {"comparison": rows, "ranked": ranked, "best": best})
 
@@ -1101,18 +1113,19 @@ def arrange_project(project: Project, media: str,
 
 
 def compare_project(project: Project, media: str, grids: tuple = DEFAULT_GRIDS,
+                    matches: tuple = DEFAULT_MATCHES,
                     cancel: CancelToken = None) -> Iterator[ProgressEvent]:
-    """Compare grids for a project: the project's scoped clips + non-grid options,
-    swept across grids, accumulating each variant in the project folder."""
+    """Compare a project across grid × match: the project's scoped clips +
+    non-grid options, swept, accumulating each variant in the project folder."""
     stem = os.path.splitext(project.track)[0]
     analysis = os.path.join(media, "catalog_audio", f"{stem}.analysis.json")
     library = os.path.join(media, "catalog", "manifest.csv")
     manifest = write_scoped_manifest(
         library, project.clips, os.path.join(project.dir, "manifest-scope.csv"))
-    yield from compare(analysis, manifest, grids=grids, out_dir=project.dir,
-                       beats_per_cut=project.beats_per_cut,
+    yield from compare(analysis, manifest, grids=grids, matches=matches,
+                       out_dir=project.dir, beats_per_cut=project.beats_per_cut,
                        allow_reuse=project.allow_reuse, drop_blurry=project.drop_blurry,
-                       clip_from=project.clip_from, match=project.match, cancel=cancel)
+                       clip_from=project.clip_from, cancel=cancel)
 
 
 def render_project(project: Project,

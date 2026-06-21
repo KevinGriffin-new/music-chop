@@ -1163,19 +1163,30 @@ class App(tk.Tk):
         self.log.see("end")
 
     def _show_comparison(self, res: dict) -> None:
-        """Log the grid comparison best-first and preselect the winning grid so
-        Render/Export target it (mirrors the web table)."""
+        """Log the grid × match comparison (best energy first) so you can weigh
+        each strategy's brightness/colour alternation against its fit to the song,
+        then Arrange the grid + match you pick."""
         ranked = res.get("ranked") or res.get("comparison") or []
-        best = res.get("best")
-        self.log.insert("end", "  grid comparison (best energy match first):\n")
+        best = res.get("best")                # winning tag, e.g. "downbeats-contrast"
+        self.log.insert("end", "  comparison — grid × match  "
+                        "(engy = fit to song; luma/hue = brightness/colour "
+                        "alternation, higher = punchier):\n")
+        self.log.insert("end", f"    {'grid':<10} {'match':<9} "
+                        f"{'engy':>5} {'luma':>5} {'hue':>5}  cuts\n")
+        top_grid = None
         for r in ranked:
-            pct = "—" if r.get("energy_match_pct") is None else f"{r['energy_match_pct']}%"
-            star = " ★" if r["grid"] == best else ""
-            self.log.insert("end", f"    {r['grid']:<10} {pct:>5}  "
-                            f"cuts={r.get('cuts')}  clips={r.get('clips')}{star}\n")
-        if best:
-            self._last_grid = best       # Render/Export reuse the last grid
-            self.status.config(text=f"✓ best fit: {best} — Render/Export will use it")
+            pct = "—" if r.get("energy_match_pct") is None else f"{r['energy_match_pct']:.0f}%"
+            lc = "—" if r.get("luma_contrast") is None else f"{r['luma_contrast']:.2f}"
+            hv = "—" if r.get("hue_variety") is None else f"{r['hue_variety']:.2f}"
+            star = " ★" if r.get("tag") == best else ""
+            if r.get("tag") == best:
+                top_grid = r.get("grid")
+            self.log.insert("end", f"    {r.get('grid',''):<10} {r.get('match',''):<9} "
+                            f"{pct:>5} {lc:>5} {hv:>5}  {r.get('cuts')}{star}\n")
+        if top_grid:
+            self._last_grid = top_grid       # Arrange opens on the best-energy grid
+            self.status.config(
+                text="compared — open Arrange to pick a grid + match, then Render")
         self.log.see("end")
 
 
