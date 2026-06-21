@@ -4,6 +4,26 @@ Planned features and enhancements (things not built yet). This is distinct from
 the **bug tracker** (https://todo.sr.ht/~kevin_griffin/music-chop-dv2mv), which
 is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 
+## Session handoff (2026-06-21)
+For the next context — where things stand:
+
+- **CI/CD is live.** GitHub `KevinGriffin-new/music-chop` is a downstream mirror
+  of sr.ht: `origin` has two push URLs, so one `git push` updates both. GitHub
+  Actions (`.github/workflows/ci.yml`) runs the test suite on macOS + Linux every
+  push — currently green. Push to sr.ht only with
+  `git push git@git.sr.ht:~kevin_griffin/music-chop main`.
+- **Key constraint:** the render stage runs a generated **bash** script, so
+  native Windows isn't supported (CI is macOS+Linux; a Windows installer is out
+  until the render is driven from Python — see "Render de-bash"). Packaging
+  targets are therefore macOS `.app` + Linux `.deb`/`.rpm`.
+- **Reviewer install today:** `environment.yml` (conda, one command, bundles
+  ffmpeg+rubberband) and a web-tier `Dockerfile` (built + smoke-tested green).
+- **Suggested next:** (1) packaging scaffolds — macOS `.app` (py2app/PyInstaller)
+  + Linux `.deb`/`.rpm` Actions workflows (iterate on real runners:
+  codesign/notarize, bundling ffmpeg/Tk); (2) the dv2mv MCP server (below);
+  (3) webapp UI for the match presets + compare metrics; (4) optional render
+  de-bash to unlock Windows.
+
 ## Next
 - **Web E2E tests** with Playwright (the web tier is a real web app; server-side
   is already covered by FastAPI TestClient).
@@ -18,19 +38,18 @@ is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
   compose it with the DaVinci Resolve MCP (export → import → grade). Tool-surface
   spec sketched; ~half a day for a stdio server (`_run` drains each stage
   generator into one tool result).
+- **Render de-bash.** Drive the render from Python (subprocess ffmpeg per
+  segment + concat + mux) instead of emitting a bash `render-*.sh`. Removes the
+  POSIX-shell dependency (unlocks native Windows), and lets render report
+  progress/cancel directly rather than parsing script echoes.
 
 ## Later
-- **Packaging & CI.** Reviewer setup today: `environment.yml` (conda — one
-  command, pulls ffmpeg + rubberband from conda-forge), a `Dockerfile` for the
-  web tier, and from-source (pip/venv). *Deferred* (revisit only if reviewers
-  want click-to-run): native installers — macOS `.app`/`.dmg`, Windows `.msi`,
-  Linux `.deb`/`.rpm` — and CI. Constraints when we pick this up:
-  builds.sr.ht is **Linux/BSD only**, so `.deb`/`.rpm` + a tests-on-push
-  pipeline are feasible there, but **macOS/Windows bundles need GitHub Actions
-  (free mac/win runners, via a mirror) or local builds**; and native bundling of
+- **Native installers.** Mirror + CI are done (see handoff). Remaining: build
+  downloadable artifacts on GitHub Actions — macOS `.app`/`.dmg` and Linux
+  `.deb`/`.rpm` (Windows needs render de-bash first). Native bundling of
   librosa/numba/opencv + a bundled ffmpeg/Tk is heavy (plus macOS
-  codesign/notarize). Likely first step when resumed: a `.build.yml` that runs
-  the test suite on push.
+  codesign/notarize), so take one target end-to-end before fanning out.
+  conda `environment.yml` + the web `Dockerfile` cover reviewers in the meantime.
 
 ## Done (for context)
 Hardened engine (6 stages, fail-loud, real progress, provenance); both UIs with
@@ -60,3 +79,26 @@ precedence DV2MV_MEDIA env > saved choice > cwd);
 now an explicit union/difference/replace — `revise_clip_selection()` — not just
 a wholesale replace; both tiers);
 MPL-2.0; on sr.ht.
+
+_Session 2026-06-21:_
+**brightness-aware matching** — `sync_clips` weighted clip↔slot cost: motion↔song
+energy (as before) plus luma-contrast and hue-variety terms that alternate
+brightness/colour between adjacent cuts (`--match energy|contrast|variety`, tk
+Match radio). Derived from measuring that frame brightness has ~zero correlation
+with the beat on reference videos (`tools/brightness_probe.py`) — its value is
+the alternation, not beat-timing.
+**compare sweeps grid × match** with a trade-off table (motion-only energy
+yardstick + luma_contrast/hue_variety per cell; best = winning grid-match tag).
+**Retempo** — pitch-preserved BPM slider (Rubber Band R3 when installed → ffmpeg
+`atempo` fallback); `engine.retempo` + a tk "Tempo…" dialog.
+**timecode-correct export** — FCPXML/OTIO now bake each clip's embedded source
+timecode (PySceneDetect splits carry tape TC), so Resolve imports them instead
+of producing offline/empty timelines; verified by importing into Resolve.
+**per-match output names** — arrangements tagged `<grid>-<match>` everywhere
+(`engine.arrange_tag`) so a different match doesn't overwrite a cut;
+**commit/date stamp in the Tk offline banner** (so testers know the build).
+Fixes: render no longer yields a videoless cut (coalesce sub-frame grid slots +
+`ffmpeg -y` so re-renders overwrite); gallery reflects an "all" clip scope on
+reopen; Tempo refuses without a real analyzed track; snappier Tk buttons (idle
+progress-bar animation stopped); dashed output filenames.
+**GitHub mirror + macOS/Linux CI** (downstream of sr.ht; `.github/workflows/ci.yml`).
