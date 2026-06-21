@@ -1,0 +1,22 @@
+# keep the build context lean + never bake media or local state into the image
+.git
+__pycache__/
+*.pyc
+.pytest_cache/
+_smoke/
+artifacts/
+# media + generated outputs live OUTSIDE the repo, but ignore them if present
+clips/
+catalog/
+catalog_audio/
+album-audio/
+sources/
+projects/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.otio
+*.fcpxml

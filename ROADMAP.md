@@ -12,11 +12,25 @@ is for things that are broken. See [REPORTING.md](REPORTING.md) for filing bugs.
 - **Export polish.** The export stage ships (OTIO + FCPXML, below). Follow-ups
   if Resolve import needs them: spatial/scale conform per clip, EDL as a third
   format (OTIO's cmx3600 adapter), and a UI toggle for which formats to write.
+- **dv2mv MCP server.** Expose the engine stages (analyze / retempo / arrange /
+  compare / render / export + projects) as MCP tools — a thin third front-end
+  over `engine.py` — so an agent can drive the pipeline conversationally and
+  compose it with the DaVinci Resolve MCP (export → import → grade). Tool-surface
+  spec sketched; ~half a day for a stdio server (`_run` drains each stage
+  generator into one tool result).
 
 ## Later
-- **Packaging** — bundle the Tk tier as a double-click app (PyInstaller/py2app;
-  the pain is librosa/numba/opencv/scenedetect + a bundled ffmpeg, and macOS
-  codesigning/notarization). The web tier ships from a venv.
+- **Packaging & CI.** Reviewer setup today: `environment.yml` (conda — one
+  command, pulls ffmpeg + rubberband from conda-forge), a `Dockerfile` for the
+  web tier, and from-source (pip/venv). *Deferred* (revisit only if reviewers
+  want click-to-run): native installers — macOS `.app`/`.dmg`, Windows `.msi`,
+  Linux `.deb`/`.rpm` — and CI. Constraints when we pick this up:
+  builds.sr.ht is **Linux/BSD only**, so `.deb`/`.rpm` + a tests-on-push
+  pipeline are feasible there, but **macOS/Windows bundles need GitHub Actions
+  (free mac/win runners, via a mirror) or local builds**; and native bundling of
+  librosa/numba/opencv + a bundled ffmpeg/Tk is heavy (plus macOS
+  codesign/notarize). Likely first step when resumed: a `.build.yml` that runs
+  the test suite on push.
 
 ## Done (for context)
 Hardened engine (6 stages, fail-loud, real progress, provenance); both UIs with

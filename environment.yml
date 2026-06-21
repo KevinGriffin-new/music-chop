@@ -1,0 +1,41 @@
+# dv2mv — one-command setup for reviewers.
+#
+# conda-forge supplies the awkward bits (ffmpeg + rubberband) alongside the
+# Python libs, so there's no separate brew/apt step. Cross-platform.
+#
+#   conda env create -f environment.yml
+#   conda activate dv2mv
+#   python tkapp.py          # desktop app
+#   # …or the web tier:  DV2MV_MEDIA=/path/to/media python webapp.py
+#
+# Media (footage/audio/outputs) lives OUTSIDE the repo — point the app at it via
+# the in-app Media Library control, or set DV2MV_MEDIA.
+name: dv2mv
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  # system binaries (otherwise a brew/apt chore) + native libs
+  - ffmpeg                 # decode/encode/concat + ffprobe
+  - rubberband             # optional: Retempo R3; engine falls back to ffmpeg atempo
+  - numpy
+  - scipy
+  - librosa                # musical analysis (brings numba)
+  - opencv                 # provides cv2 for clip features + scenedetect
+  - scikit-learn
+  - matplotlib
+  - pillow
+  - pip
+  - pip:
+      # PyPI-only / kept on pip to avoid a second opencv (scenedetect's [opencv]
+      # extra would pull opencv-python on top of conda's cv2 — plain works)
+      - scenedetect
+      - opentimelineio
+      - "coverage>=7.14"   # numba import chain needs >=7.14 (see requirements.txt)
+      # web tier
+      - fastapi
+      - "uvicorn[standard]"
+      - python-multipart
+      # dev / test
+      - pytest
+      - httpx

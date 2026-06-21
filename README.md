@@ -100,12 +100,37 @@ has a **Cancel** button that sets the worker's token.
 
 ## Setup
 
+The only non-pip dependency is **ffmpeg/ffprobe** (always) and **rubberband**
+(optional — Retempo's R3 engine; the engine falls back to ffmpeg `atempo`
+without it). `scenedetect` and everything else are pip packages.
+
+**Conda — recommended (one command, gets ffmpeg + rubberband too, cross-platform):**
+
+```bash
+conda env create -f environment.yml
+conda activate dv2mv
+python tkapp.py                 # desktop app  (or: python webapp.py)
+```
+
+**Docker — web tier only (zero host setup):**
+
+```bash
+docker build -t dv2mv-web .
+docker run --rm -p 8000:8000 -v /path/to/media:/media dv2mv-web
+# open http://localhost:8000   (the mounted folder is your media library)
+```
+
+The Tk desktop app and the DaVinci Resolve hand-off need a display / a Resolve
+install, so they're not containerized — use the conda env for the full workflow.
+
+**From source (pip/venv):**
+
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# system binaries on PATH: ffmpeg, ffprobe, scenedetect
+# system binaries on PATH: ffmpeg, ffprobe
 # optional: rubberband  (R3 time-stretch for Retempo; falls back to ffmpeg atempo)
-#   macOS: brew install rubberband
+#   macOS: brew install rubberband   ·   Debian/Ubuntu: apt install rubberband-cli
 ```
 
 ## Run
