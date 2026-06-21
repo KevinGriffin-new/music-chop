@@ -675,6 +675,13 @@ def retempo(
 
 
 # ── stage 4: arrange (sync clips to the track's structure) ─────────────────
+def arrange_tag(grid: str, match: str = "energy") -> str:
+    """The tag identifying an arrangement = grid + match strategy. Both go in the
+    output names (render-<track>-<grid>-<match>.sh, cut-…, .arrange.json) so a
+    different match on the same grid is its own cut, not an overwrite."""
+    return f"{grid}-{match}"
+
+
 def _tag_suffix(tag: str) -> str:
     """Sanitize a tag into a filename-safe '-tag' suffix (mirrors clip_order.py)."""
     t = re.sub(r"[^A-Za-z0-9._-]+", "-", tag).strip("-")
@@ -729,7 +736,7 @@ def arrange(
             "No clip catalog yet — add footage (Upload + analyze footage) to "
             "build the manifest before arranging.")
     if tag is None:
-        tag = grid
+        tag = arrange_tag(grid, match)
     cmd = [sys.executable, SCRIPT["sync"], "--analysis", analysis_json,
            "--manifest", manifest, "--grid", grid,
            "--beats-per-cut", str(beats_per_cut),
@@ -1108,7 +1115,8 @@ def arrange_project(project: Project, media: str,
     # tag by grid so trying different sync schemes accumulates side-by-side
     # variants in the project folder (render-<track>-<grid>.sh / cut-…-<grid>.mp4)
     # to compare, rather than overwriting one cut.
-    yield from arrange(analysis, manifest, out_dir=project.dir, tag=project.grid,
+    yield from arrange(analysis, manifest, out_dir=project.dir,
+                       tag=arrange_tag(project.grid, project.match),
                        cancel=cancel, **project.arrange_opts())
 
 
@@ -1132,7 +1140,8 @@ def render_project(project: Project,
                    cancel: CancelToken = None) -> Iterator[ProgressEvent]:
     """Render the project's current grid's arrangement (script in the project)."""
     stem = os.path.splitext(project.track)[0]
-    cand = os.path.join(project.dir, f"render-{stem}{_tag_suffix(project.grid)}.sh")
+    tag = arrange_tag(project.grid, project.match)
+    cand = os.path.join(project.dir, f"render-{stem}{_tag_suffix(tag)}.sh")
     sh = cand if os.path.exists(cand) else (
         find_render_script(project.dir, project.track) or cand)
     yield from render(sh, cancel=cancel)
@@ -1143,7 +1152,8 @@ def export_project(project: Project, media: str, formats: tuple = ("otio", "fcpx
     """Export the project's current grid's arrangement to an editable timeline
     (into the project folder, next to its render/cut)."""
     stem = os.path.splitext(project.track)[0]
-    cand = os.path.join(project.dir, f"{stem}{_tag_suffix(project.grid)}.arrange.json")
+    tag = arrange_tag(project.grid, project.match)
+    cand = os.path.join(project.dir, f"{stem}{_tag_suffix(tag)}.arrange.json")
     arr = cand if os.path.exists(cand) else (
         find_arrange_json(project.dir, project.track) or cand)
     yield from export(arr, out_dir=project.dir, formats=formats, cancel=cancel)

@@ -143,6 +143,21 @@ def gallery_clip_path(row: dict) -> str:
     return c[len("file://"):] if c.startswith("file://") else c
 
 
+def _build_stamp() -> str:
+    """Short commit id + date for the banner, so a tester knows which build this
+    is. Empty string if it isn't a git checkout (e.g. a packaged copy)."""
+    d = engine.HERE
+    try:
+        sha = subprocess.run(["git", "-C", d, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+        date = subprocess.run(
+            ["git", "-C", d, "log", "-1", "--format=%cd", "--date=format:%Y-%m-%d %H:%M"],
+            capture_output=True, text=True, timeout=3).stdout.strip()
+        return f"{sha} · {date}" if sha else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 def format_arrange_summary(meta: dict) -> str:
     """One-line human summary of an arrange.json (what options/result produced
     the cut). Pure, so it's testable without a window."""
@@ -639,12 +654,15 @@ class App(tk.Tk):
         except Exception:
             pass
         self.q: queue.Queue[engine.ProgressEvent] = queue.Queue()
-        self._last_grid = None     # grid chosen in the options dialog; render reuses it
+        self._last_grid = None     # grid chosen in the options dialog (dialog default)
+        self._last_tag = None      # grid-match tag of the last arrangement (Render/Export reuse)
         self.project = None        # active Project (None => whole-library mode)
         self._cancel = None        # cancel token for the in-flight stage (a threading.Event)
 
         title_font = (IRIX_MENU_FONT[0], IRIX_MENU_FONT[1] + 2, "bold italic")
-        ttk.Label(self, text="dv2mv — offline", anchor="center", relief="raised",
+        stamp = _build_stamp()
+        banner = "dv2mv — offline" + (f"   ·   {stamp}" if stamp else "")
+        ttk.Label(self, text=banner, anchor="center", relief="raised",
                   borderwidth=2, padding=4, font=title_font).pack(fill="x")
 
         # ── media library (the root all media/outputs live under) ───────────
@@ -814,10 +832,10 @@ class App(tk.Tk):
         elif self.project:                                   # render the project
             self._spawn(lambda c: engine.render_project(self.project, cancel=c))
         else:
-            # library mode: prefer the grid last arranged; else the newest match
+            # library mode: prefer the last arrangement (grid-match tag); else the newest
             sh = None
-            if self._last_grid:
-                cand = os.path.join(cat, f"render-{stem}{engine._tag_suffix(self._last_grid)}.sh")
+            if self._last_tag:
+                cand = os.path.join(cat, f"render-{stem}{engine._tag_suffix(self._last_tag)}.sh")
                 sh = cand if os.path.exists(cand) else None
             sh = sh or engine.find_render_script(cat, track) or os.path.join(
                 cat, f"render-{stem}.sh")
@@ -940,7 +958,8 @@ class App(tk.Tk):
         cuts = os.path.join(media, "cuts")
         def run(p):
             self._last_grid = p["grid"]
-            self.status.config(text=f"arranging on the {p['grid']} grid …")
+            self._last_tag = engine.arrange_tag(p["grid"], p["match"])  # Render/Export reuse
+            self.status.config(text=f"arranging {p['grid']} · {p['match']} …")
             self._spawn(lambda c: engine.arrange(analysis, manifest, cut_dir=cuts,
                                                  cancel=c, **p))
         ArrangeOptions(self, on_ok=run,
@@ -977,8 +996,8 @@ class App(tk.Tk):
                                                         cancel=c))
             return
         arr = None
-        if self._last_grid:
-            cand = os.path.join(cat, f"{stem}{engine._tag_suffix(self._last_grid)}.arrange.json")
+        if self._last_tag:
+            cand = os.path.join(cat, f"{stem}{engine._tag_suffix(self._last_tag)}.arrange.json")
             arr = cand if os.path.exists(cand) else None
         arr = arr or engine.find_arrange_json(cat, track)
         if not arr:
@@ -1187,6 +1206,7 @@ class App(tk.Tk):
                             f"{pct:>5} {lc:>5} {hv:>5}  {r.get('cuts')}{star}\n")
         if top_grid:
             self._last_grid = top_grid       # Arrange opens on the best-energy grid
+            self._last_tag = best            # Render/Export target the winning grid-match
             self.status.config(
                 text="compared — open Arrange to pick a grid + match, then Render")
         self.log.see("end")
