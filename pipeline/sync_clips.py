@@ -97,8 +97,20 @@ def build_grid(an, grid, beats_per_cut):
     else:
         pts = an["sections"]
     pts = sorted(set([0.0] + [p for p in pts if 0 < p < dur] + [dur]))
+    # Coalesce points closer than MIN_SLOT: closely-spaced grid points (harmonic
+    # changes especially, more so after a tempo stretch) otherwise make a
+    # sub-frame slot, and `ffmpeg -t <slot>` then yields a 0-frame segment that
+    # corrupts the concat → a cut with audio but no video. Drop the offending
+    # boundary so the tiny slot merges into the previous one.
+    MIN_SLOT = max(2.0 / RENDER_FPS, 0.1)        # >= a couple frames; never sub-frame
+    kept = [pts[0]]
+    for p in pts[1:]:
+        if p - kept[-1] >= MIN_SLOT:
+            kept.append(p)
+    if kept[-1] != pts[-1]:                       # never lose the track tail
+        kept[-1] = pts[-1]                        # extend the last slot to the end
     # slots = consecutive pairs
-    return [(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+    return [(kept[i], kept[i + 1]) for i in range(len(kept) - 1)]
 
 
 def energy_at(an, t0, t1):
@@ -294,17 +306,17 @@ def main():
             # progress marker the engine parses as [done/total] for a real bar
             fh.write(f'echo "[{seg + 1}/{ntotal}] segment {seg + 1}/{nseg}"\n')
             fh.write(
-                f'ffmpeg -nostdin -loglevel error -ss {ss:.3f} -i "{clip}" -t {d:.3f} '
+                f'ffmpeg -nostdin -y -loglevel error -ss {ss:.3f} -i "{clip}" -t {d:.3f} '
                 f'-vf "scale={RENDER_W}:{RENDER_H}:force_original_aspect_ratio=decrease,'
                 f'pad={RENDER_W}:{RENDER_H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={RENDER_FPS}" '
                 f'-an -c:v libx264 -crf 18 -preset fast "$TMP/{seg:04d}.mp4"\n')
         fh.write(f'echo "[{nseg + 1}/{ntotal}] concatenating segments"\n')
         fh.write('for f in "$TMP"/*.mp4; do echo "file \'$f\'"; done > "$TMP/list.txt"\n')
-        fh.write('ffmpeg -nostdin -loglevel error -f concat -safe 0 -i "$TMP/list.txt" '
+        fh.write('ffmpeg -nostdin -y -loglevel error -f concat -safe 0 -i "$TMP/list.txt" '
                  '-c copy "$TMP/video.mp4"\n')
         fh.write(f'echo "[{ntotal}/{ntotal}] muxing audio"\n')
         fh.write(f'mkdir -p "{cut_dir}"\n')
-        fh.write(f'ffmpeg -nostdin -loglevel error -i "$TMP/video.mp4" -i "$MUSIC" '
+        fh.write(f'ffmpeg -nostdin -y -loglevel error -i "$TMP/video.mp4" -i "$MUSIC" '
                  f'-map 0:v -map 1:a -c:v copy -c:a aac -shortest "{cut_path}"\n')
         fh.write(f'echo "wrote {cut_path}"\nrm -rf "$TMP"\n')
     os.chmod(render, 0o755)
