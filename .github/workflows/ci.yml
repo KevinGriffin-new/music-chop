@@ -1,0 +1,55 @@
+# Cross-platform test run on the GitHub mirror (sourcehut is upstream).
+# The suite degrades gracefully — integration tests skip when ffmpeg/librosa/
+# cv2/otio/tkinter are missing, and the GUI smoke is opt-in (DV2MV_GUI_TEST) —
+# so this validates pure logic everywhere and the full pipeline where deps exist.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: tests · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: System deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libgl1 libglib2.0-0 xvfb
+          # rubberband is optional (Retempo R3 falls back to ffmpeg atempo)
+          sudo apt-get install -y rubberband-cli || true
+
+      - name: System deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg rubberband || brew install ffmpeg
+
+      - name: System deps (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y
+
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Test (Linux — under xvfb so Tk has a display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest tests -q
+
+      - name: Test (macOS / Windows)
+        if: runner.os != 'Linux'
+        run: python -m pytest tests -q
