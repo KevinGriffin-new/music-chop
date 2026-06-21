@@ -490,8 +490,8 @@ def test_web_arrange_within_project(proj_client):
     import json
     ev = json.loads(done.split("data: ", 1)[1])
     assert ev["result"]["summary"]["grid"] == "sections"
-    # outputs landed in the project's own folder, tagged by grid
-    assert os.path.exists(os.path.join(media, "projects", "P", "render-Song-sections.sh"))
+    # outputs landed in the project's own folder, tagged grid-match
+    assert os.path.exists(os.path.join(media, "projects", "P", "render-Song-sections-energy.sh"))
 
 
 def test_web_index_has_project_controls(client):

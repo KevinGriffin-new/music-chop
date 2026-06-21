@@ -470,8 +470,8 @@ def test_arrange_builds_sidecars_with_tag(synth_analysis, smoke_manifest):
         lambda e: None)
     for key in ("order", "labels", "markers", "render_sh", "options"):
         assert os.path.exists(final[key]), f"{key} not written"
-    # tag defaults to the grid, so the suffix is in the names
-    assert "-sections" in os.path.basename(final["render_sh"])
+    # tag defaults to grid-match, so the suffix is in the names
+    assert "-sections-energy" in os.path.basename(final["render_sh"])
     assert isinstance(final["energy_match"], int)
 
     # the arrange.json records exactly what options produced this cut
@@ -479,7 +479,7 @@ def test_arrange_builds_sidecars_with_tag(synth_analysis, smoke_manifest):
     meta = json.load(open(final["options"]))
     assert meta["grid"] == "sections" and meta["beats_per_cut"] == 3
     assert meta["allow_reuse"] is True and meta["clip_from"] == "start"
-    assert meta["tag"] == "sections" and "energy_match_pct" in meta
+    assert meta["tag"] == "sections-energy" and "energy_match_pct" in meta
     assert meta["outputs"]["cut"].startswith("cut-") and meta["outputs"]["cut"].endswith(".mp4")
 
     # the same summary rides along in the event so the UIs can show it
@@ -708,7 +708,8 @@ def test_arrange_project_keeps_grid_variants(tmp_path, smoke_manifest):
     p.grid = "downbeats"
     engine.run_stage(engine.arrange_project(p, str(media)), lambda e: None)
     have = sorted(f for f in os.listdir(p.dir) if f.startswith("render-"))
-    assert have == ["render-Song-downbeats.sh", "render-Song-sections.sh"]   # both kept
+    # tagged grid-match, so a different grid (and/or match) keeps its own variant
+    assert have == ["render-Song-downbeats-energy.sh", "render-Song-sections-energy.sh"]
 
 
 # ── export: editable timeline (OTIO / FCPXML) ────────────────────────────────
@@ -793,7 +794,7 @@ def test_export_writes_otio_and_reads_back(synth_analysis, smoke_manifest, tmp_p
     clips = lambda trk: [c for c in trk if isinstance(c, otio.schema.Clip)]
     assert len(clips(tl.tracks[0])) == n_slots
     assert len(clips(tl.tracks[1])) == 1
-    assert tl.name.endswith("-sections")
+    assert tl.name.endswith("-sections-energy")
 
 
 @requires_otio
@@ -834,13 +835,13 @@ def test_export_project_outputs_into_project_dir(tmp_path, smoke_manifest):
     final = engine.run_stage(engine.export_project(p, str(media), formats=("otio",)),
                              lambda e: None)
     assert os.path.dirname(final["otio"]) == p.dir
-    assert os.path.basename(final["otio"]) == "Song-sections.otio"
+    assert os.path.basename(final["otio"]) == "Song-sections-energy.otio"
 
 
-# ── compare: arrange across grids, rank by energy match ──────────────────────
+# ── compare: arrange across grid × match, rank by energy match ───────────────
 def test_compare_ranks_grids_and_writes_variants(synth_analysis, smoke_manifest, tmp_path):
-    """compare() arranges every grid (leaving each variant on disk) and returns
-    a table ranked best-match-first."""
+    """compare() arranges every grid × match strategy (leaving each variant on
+    disk) and returns a table ranked best-energy-first."""
     cuts = str(tmp_path / "cuts")
     grids = ("sections", "downbeats", "beats")
     final = engine.run_stage(
@@ -848,14 +849,17 @@ def test_compare_ranks_grids_and_writes_variants(synth_analysis, smoke_manifest,
                        allow_reuse=True, cut_dir=cuts),
         lambda e: None)
     rows = final["comparison"]
-    assert [r["grid"] for r in rows] == list(grids)        # one row per grid, in order
+    # one row per (grid, match) cell now
+    assert {r["grid"] for r in rows} == set(grids)
+    assert {r["match"] for r in rows} == set(engine.DEFAULT_MATCHES)
+    assert len(rows) == len(grids) * len(engine.DEFAULT_MATCHES)
     assert all(isinstance(r["energy_match_pct"], (int, float)) for r in rows)
-    # ranked is sorted best-match-first; best matches the top of ranked
+    # ranked is sorted best-match-first; best is the top row's grid-match tag
     ranked = final["ranked"]
     pcts = [r["energy_match_pct"] for r in ranked]
     assert pcts == sorted(pcts, reverse=True)
-    assert final["best"] == ranked[0]["grid"]
-    # every grid's sidecars were actually written (variants ready to render/export)
+    assert final["best"] == ranked[0]["tag"]
+    # every cell's sidecars were actually written (variants ready to render/export)
     for r in rows:
         assert os.path.exists(r["render_sh"]) and os.path.exists(r["options"])
 
@@ -866,10 +870,12 @@ def test_compare_one_bad_grid_becomes_error_row(synth_analysis, smoke_manifest):
         engine.compare(synth_analysis, smoke_manifest,
                        grids=("sections", "bogus"), allow_reuse=True),
         lambda e: None)
-    by_grid = {r["grid"]: r for r in final["comparison"]}
-    assert by_grid["sections"]["energy_match_pct"] is not None
-    assert by_grid["bogus"]["energy_match_pct"] is None and "error" in by_grid["bogus"]
-    assert final["best"] == "sections"                     # the good one still wins
+    rows = final["comparison"]
+    sect = [r for r in rows if r["grid"] == "sections"]
+    bog = [r for r in rows if r["grid"] == "bogus"]
+    assert sect and all(r["energy_match_pct"] is not None for r in sect)
+    assert bog and all(r["energy_match_pct"] is None and "error" in r for r in bog)
+    assert final["best"] == "sections-energy"              # best-energy good cell wins
 
 
 def test_compare_missing_analysis_prompts_analyze(tmp_path, smoke_manifest):
@@ -891,4 +897,6 @@ def test_compare_project_sweeps_into_project_dir(tmp_path, smoke_manifest):
         lambda e: None)
     assert {r["grid"] for r in final["comparison"]} == {"sections", "downbeats"}
     have = sorted(f for f in os.listdir(p.dir) if f.startswith("render-"))
-    assert have == ["render-Song-downbeats.sh", "render-Song-sections.sh"]
+    expect = sorted(f"render-Song-{g}-{m}.sh"
+                    for g in ("sections", "downbeats") for m in engine.DEFAULT_MATCHES)
+    assert have == expect
