@@ -1,0 +1,8 @@
+# Build-only tools for the macOS .app (NOT runtime deps — keep out of
+# requirements.txt). Install into the same env that has the runtime stack:
+#
+#   pip install -r packaging/requirements-build.txt
+#   bash packaging/build_macos.sh
+#
+pyinstaller>=6.6
+pyinstaller-hooks-contrib>=2024.7   # hooks for numba, llvmlite, librosa, sklearn…

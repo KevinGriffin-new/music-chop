@@ -43,3 +43,10 @@ histograms.npz
 
 # ...but keep the committed synthetic test fixtures under _smoke/
 !_smoke/**
+
+# macOS packaging (PyInstaller) — generated build artifacts, never committed.
+# The .app/.dmg are hundreds of MB; the recipe (packaging/*.spec, *.sh) is the
+# source of truth and IS committed. Distribute the .dmg via a GitHub Release.
+/build/
+/dist/
+packaging/dv2mv.icns

@@ -127,6 +127,34 @@ SCRIPT = {
     "export":   os.path.join(PIPELINE, "export_timeline.py"),
 }
 
+# ── frozen-app dispatch ─────────────────────────────────────────────────────
+# When packaged into a single-file macOS .app (PyInstaller), sys.executable is
+# the app bootloader, NOT a Python interpreter — so the source-mode pattern of
+# re-invoking `[sys.executable, some_script.py]` would relaunch the GUI instead
+# of running a stage. The packaging/entry.py dispatcher recognizes the
+# --run-pipeline / --run-scenedetect flags below and runs the right code in a
+# fresh process (preserving the subprocess isolation that cancellation relies
+# on). These helpers emit the correct argv for both frozen and source runs;
+# everything is a no-op when running from source.
+_FROZEN = getattr(sys, "frozen", False)
+
+
+def _pipeline_cmd(name: str, *args: str) -> list:
+    """argv to run pipeline script `name` (a key in SCRIPT). Frozen: route
+    through the app dispatcher; source: run the .py with this interpreter."""
+    if _FROZEN:
+        return [sys.executable, "--run-pipeline", name, *args]
+    return [sys.executable, SCRIPT[name], *args]
+
+
+def _scenedetect_cmd(*args: str) -> list:
+    """argv for the PySceneDetect CLI. Frozen: through the dispatcher, since
+    `scenedetect` is a Python console-script (not a bundled native binary);
+    source: the bare command resolved on PATH."""
+    if _FROZEN:
+        return [sys.executable, "--run-scenedetect", *args]
+    return ["scenedetect", *args]
+
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv")
 
 # one-line help for each arrange grid (shared by both UIs so they stay in sync)
@@ -487,12 +515,12 @@ def detect(
         _check_cancel(cancel, st)
         base = os.path.basename(f)
         yield ProgressEvent(st, f"detecting scenes — {base}", i / total)
-        cmd = [
-            "scenedetect", "-i", f, "-o", out_dir,
+        cmd = _scenedetect_cmd(
+            "-i", f, "-o", out_dir,
             "detect-content", "--threshold", str(threshold),
             "--min-scene-len", min_scene_len,
             "split-video", "--rate-factor", str(rate_factor), "--preset", preset,
-        ]
+        )
         for _ in _stream(cmd, cwd=MEDIA, cancel=cancel):
             pass  # scenedetect is noisy; we report per-file granularity
     n = len(glob(os.path.join(out_dir, "*-Scene-*.mp4")))
@@ -526,8 +554,8 @@ def catalog(
     """
     st = "catalog"
     os.makedirs(out_dir, exist_ok=True)
-    cmd = [sys.executable, SCRIPT["features"], clips_dir, "-o", out_dir,
-           "--frames", str(frames), "--width", str(width)]
+    cmd = _pipeline_cmd("features", clips_dir, "-o", out_dir,
+                        "--frames", str(frames), "--width", str(width))
     if recursive:
         cmd.append("--recursive")
     if append:
@@ -569,7 +597,7 @@ def analyze(
     summary_path = os.path.join(out_dir, "tracks_summary.csv")
     before = _read_summary(summary_path)
 
-    cmd = [sys.executable, SCRIPT["analyze"], audio, "-o", out_dir, "--sr", str(sr)]
+    cmd = _pipeline_cmd("analyze", audio, "-o", out_dir, "--sr", str(sr))
     if plot:
         cmd.append("--plot")
     yield ProgressEvent(st, f"analyzing {track} …", None)
@@ -737,11 +765,11 @@ def arrange(
             "build the manifest before arranging.")
     if tag is None:
         tag = arrange_tag(grid, match)
-    cmd = [sys.executable, SCRIPT["sync"], "--analysis", analysis_json,
-           "--manifest", manifest, "--grid", grid,
-           "--beats-per-cut", str(beats_per_cut),
-           "--drop-blurry", str(drop_blurry), "--clip-from", clip_from,
-           "--match", match, "--tag", tag]
+    cmd = _pipeline_cmd("sync", "--analysis", analysis_json,
+                        "--manifest", manifest, "--grid", grid,
+                        "--beats-per-cut", str(beats_per_cut),
+                        "--drop-blurry", str(drop_blurry), "--clip-from", clip_from,
+                        "--match", match, "--tag", tag)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         cmd += ["--out", out_dir]
@@ -916,8 +944,8 @@ def export(
         raise StageError(
             "No arrangement to export yet — run Arrange on the track first "
             f"(missing {os.path.basename(arrange_json)}).")
-    cmd = [sys.executable, SCRIPT["export"], "--arrange", arrange_json,
-           "--formats", ",".join(formats)]
+    cmd = _pipeline_cmd("export", "--arrange", arrange_json,
+                        "--formats", ",".join(formats))
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         cmd += ["--out", out_dir]

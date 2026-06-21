@@ -1212,7 +1212,9 @@ class App(tk.Tk):
         self.log.see("end")
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Launch the desktop app. Single entry point shared by `python tkapp.py`
+    and the packaged macOS .app (packaging/entry.py calls this)."""
     # If the media root isn't set (resolved to the code checkout), the app
     # prompts for a library at startup (App._ensure_media) rather than refusing
     # to launch — so no DV2MV_MEDIA guard/exit here.
@@ -1221,3 +1223,7 @@ if __name__ == "__main__":
     # abort. We collect on the main thread from the UI pump (_drain) instead.
     gc.disable()
     App().mainloop()
+
+
+if __name__ == "__main__":
+    main()

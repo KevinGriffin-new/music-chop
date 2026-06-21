@@ -44,12 +44,19 @@ For the next context — where things stand:
   progress/cancel directly rather than parsing script echoes.
 
 ## Later
-- **Native installers.** Mirror + CI are done (see handoff). Remaining: build
-  downloadable artifacts on GitHub Actions — macOS `.app`/`.dmg` and Linux
-  `.deb`/`.rpm` (Windows needs render de-bash first). Native bundling of
-  librosa/numba/opencv + a bundled ffmpeg/Tk is heavy (plus macOS
-  codesign/notarize), so take one target end-to-end before fanning out.
-  conda `environment.yml` + the web `Dockerfile` cover reviewers in the meantime.
+- **Native installers.** **macOS `.app`/`.dmg` now builds end-to-end locally**
+  (`packaging/` — PyInstaller spec + `build_macos.sh`; a re-entrant `entry.py`
+  dispatcher lets the frozen app shell out to its own pipeline stages, and
+  ffmpeg/ffprobe/rubberband are bundled under the app's `bin/`). Verified in a
+  clean env: scenedetect/cv2, bundled ffmpeg, and the librosa→numba→llvmlite
+  Analyze path all run; see README *Install (macOS app)*. **Remaining:**
+  (a) **Developer ID signing + notarization** — scaffolded and gated on
+  `DEVELOPER_ID`/`NOTARY_PROFILE`, just needs the Apple Developer Program
+  membership (current builds are ad-hoc-signed → Gatekeeper-blocked on download);
+  (b) run the build on **GitHub Actions** so the `.dmg` is a downloadable
+  Release artifact (needs signing secrets); (c) **Linux** `.deb`/`.rpm`
+  (Windows needs render de-bash first). conda `environment.yml` + the web
+  `Dockerfile` cover reviewers in the meantime.
 
 ## Done (for context)
 Hardened engine (6 stages, fail-loud, real progress, provenance); both UIs with
