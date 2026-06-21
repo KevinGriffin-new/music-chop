@@ -681,9 +681,11 @@ class App(tk.Tk):
 
         btns = ttk.Frame(self, padding=(6, 4))
         btns.pack(fill="x", padx=6)
+        # labels disambiguate the two outputs: Render bakes a finished .mp4,
+        # Export emits an editable timeline (OTIO/FCPXML) for an NLE.
         for label, stage in (("Analyze", "analyze"), ("Arrange", "arrange"),
-                             ("Compare", "compare"), ("Render", "render"),
-                             ("Export", "export")):
+                             ("Compare", "compare"), ("Render to MP4", "render"),
+                             ("Export to editor", "export")):
             ttk.Button(btns, text=label,
                        command=lambda s=stage: self.launch(s)).pack(side="left", padx=4)
         # Cancel the running stage — disabled until one is in flight (see _begin/_end)
