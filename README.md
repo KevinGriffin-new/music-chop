@@ -140,6 +140,17 @@ bash packaging/build_macos.sh
 After that, `spctl -a -vvv dist/dv2mv.app` reports `accepted` (source =
 Notarized Developer ID) and downloaders launch it with a normal double-click.
 
+The full signing + notarization recipe — creating the Developer ID cert, the
+one-time keychain partition-list fix, and recovering from a notary rejection — is
+captured as a self-contained skill at
+[`.claude/skills/sign-macos/`](.claude/skills/sign-macos/SKILL.md). The build
+script captures each submission's id, always pulls the full `notarytool log`, and
+**fails loud with the exact cause** (a per-file signing error, or a status code
+like `7000` = team not configured) rather than a bare "Invalid" or a silent hang.
+Note: a *first* submission from a new Developer ID is often held by Apple for
+in-depth analysis and can sit at `In Progress` for hours — that's an Apple-side
+delay, not a packaging problem.
+
 ## Setup
 
 The only non-pip dependency is **ffmpeg/ffprobe** (always) and **rubberband**

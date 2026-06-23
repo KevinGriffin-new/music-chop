@@ -57,9 +57,18 @@ APP="dist/dv2mv.app"
 if [[ -n "${DEVELOPER_ID:-}" ]]; then
     echo "==> codesign (Developer ID, hardened runtime)"
     # Sign nested code first, then the app, with the JIT/library entitlements.
-    find "$APP/Contents" \( -name "*.dylib" -o -name "*.so" \) -print0 \
-        | xargs -0 -I{} codesign --force --timestamp --options runtime \
-            -s "$DEVELOPER_ID" {} || true
+    # Match Mach-O binaries by *type*, not extension: the bundled CLI tools
+    # (ffmpeg/ffprobe/rubberband under Frameworks/bin) are extensionless
+    # executables, so a *.dylib/*.so glob misses them and notarization rejects
+    # the app ("not signed with a valid Developer ID / no secure timestamp /
+    # hardened runtime not enabled"). `file` + a Mach-O test catches them all.
+    find "$APP/Contents" -type f -print0 \
+        | while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q "Mach-O"; then
+                codesign --force --timestamp --options runtime \
+                    -s "$DEVELOPER_ID" "$f"
+            fi
+          done
     codesign --force --timestamp --options runtime \
         --entitlements packaging/entitlements.plist \
         -s "$DEVELOPER_ID" "$APP"
@@ -83,13 +92,50 @@ rm -rf "$(dirname "$STAGE")"
 echo "==> built $DMG"
 
 # ── 5. notarize + staple (gated on creds) ───────────────────────────────────
+# Always capture the submission id and pull the FULL notary log, so a failure
+# surfaces the exact cause — per-file signing errors (the real bug here was three
+# bundled CLIs left unsigned), or a status code like 7000 (team not configured
+# for notarization) — instead of a bare "Invalid" or a silent hang. Staple only
+# on Accepted; otherwise print the log and fail loud. Override the wait limit
+# with NOTARY_TIMEOUT (e.g. 90m); a new Developer ID's first apps are often held
+# for in-depth analysis and can take hours.
 if [[ -n "${DEVELOPER_ID:-}" && -n "${NOTARY_PROFILE:-}" ]]; then
     echo "==> notarize ($NOTARY_PROFILE)"
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
-    xcrun stapler staple "$DMG"
-    xcrun stapler staple "$APP"
-    spctl -a -vvv "$APP" || true
-    echo "==> notarized + stapled"
+    SUB_JSON="$(xcrun notarytool submit "$DMG" \
+        --keychain-profile "$NOTARY_PROFILE" --output-format json)"
+    SUB_ID="$(printf '%s' "$SUB_JSON" | plutil -extract id raw -o - -)"
+    echo "    submission id: $SUB_ID"
+
+    echo "==> waiting for verdict (timeout ${NOTARY_TIMEOUT:-45m})"
+    xcrun notarytool wait "$SUB_ID" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --timeout "${NOTARY_TIMEOUT:-45m}" || true
+
+    SUB_STATUS="$(xcrun notarytool info "$SUB_ID" \
+        --keychain-profile "$NOTARY_PROFILE" --output-format json \
+        | plutil -extract status raw -o - -)"
+    echo "    status: $SUB_STATUS"
+
+    echo "==> notary log ($SUB_ID)"
+    xcrun notarytool log "$SUB_ID" --keychain-profile "$NOTARY_PROFILE" \
+        || echo "    (log not available yet — submission still In Progress)"
+
+    if [[ "$SUB_STATUS" == "Accepted" ]]; then
+        xcrun stapler staple "$DMG"
+        xcrun stapler staple "$APP"
+        spctl -a -vvv "$APP" || true
+        echo "==> notarized + stapled"
+    else
+        {
+            echo "build: notarization status='$SUB_STATUS' (not Accepted)."
+            echo "       See the notary log above for the exact cause."
+            echo "       'In Progress' = Apple-side delay (common for a new Developer"
+            echo "       ID's first apps), not a package problem; the dmg is already"
+            echo "       signed. Pick the verdict back up later with:"
+            echo "         xcrun notarytool wait $SUB_ID --keychain-profile $NOTARY_PROFILE"
+        } >&2
+        exit 1
+    fi
 else
     echo "==> skip notarize (set DEVELOPER_ID + NOTARY_PROFILE to enable)"
 fi
