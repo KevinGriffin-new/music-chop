@@ -1,0 +1,119 @@
+# Build, sign, notarize, staple, and publish the macOS .dmg when a version tag
+# is pushed. This is the automation behind "tag a release → get a notarized
+# build" — it reuses packaging/build_macos.sh unchanged, just with the signing
+# creds sourced from repo secrets instead of your local keychain.
+#
+# Cut a release:
+#   git tag v0.1.1 && git push origin v0.1.1
+# (origin pushes to both sourcehut and GitHub; the tag on GitHub fires this.)
+#
+# ── ONE-TIME SETUP ── add these under GitHub ▸ Settings ▸ Secrets and variables
+# ▸ Actions ▸ "New repository secret". Until they exist the job fails fast at the
+# import/notarize step (it never silently ships an unsigned build).
+#
+#   MACOS_CERT_P12        base64 of your exported "Developer ID Application"
+#                         certificate (.p12, private key included). In Keychain
+#                         Access: right-click the cert ▸ Export ▸ .p12 with a
+#                         password, then:   base64 -i cert.p12 | pbcopy
+#   MACOS_CERT_PASSWORD   the password you set on that .p12 export
+#   APPLE_ID              your Apple Developer account email
+#   APPLE_APP_PASSWORD    an app-specific password (appleid.apple.com ▸ Sign-In
+#                         & Security ▸ App-Specific Passwords) — the same kind of
+#                         credential behind your local `dv2mv-notary` profile
+#   APPLE_TEAM_ID         U57D9AH736
+#
+# Notes:
+#   • Runs on an arm64 runner → the .dmg is Apple-silicon only (matches the
+#     local build; the freeze doesn't do universal2 yet).
+#   • workflow_dispatch builds without publishing — handy to smoke-test the
+#     pipeline before tagging.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:        # manual run from the Actions tab (build only, no release)
+
+permissions:
+  contents: write           # create the GitHub Release and upload the .dmg
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: System deps (ffmpeg/rubberband are bundled into the app)
+        run: brew install ffmpeg rubberband || brew install ffmpeg
+
+      - name: Python deps (runtime stack + build tools)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r packaging/requirements-build.txt
+
+      - name: Import Developer ID certificate into a throwaway keychain
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$CERT_P12" ] || { echo "::error::MACOS_CERT_P12 secret is not set"; exit 1; }
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KP="$(uuidgen)"                       # ephemeral keychain password
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KP" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KP" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          # let codesign use the key non-interactively
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KP" "$KEYCHAIN"
+          # put our keychain first in the search list so find-identity/codesign see it
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | sed 's/["[:space:]]//g')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Create notary profile from secrets
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          [ -n "$APPLE_ID" ] || { echo "::error::APPLE_ID secret is not set"; exit 1; }
+          xcrun notarytool store-credentials dv2mv-notary \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
+
+      - name: Build, sign, notarize, staple
+        run: |
+          set -euo pipefail
+          DEVELOPER_ID="$(security find-identity -v -p codesigning \
+            | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)"/\1/')"
+          [ -n "$DEVELOPER_ID" ] || { echo "::error::no Developer ID Application identity after import"; exit 1; }
+          echo "Signing as: $DEVELOPER_ID"
+          DEVELOPER_ID="$DEVELOPER_ID" NOTARY_PROFILE=dv2mv-notary \
+            bash packaging/build_macos.sh
+
+      - name: Upload .dmg as a workflow artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dv2mv-dmg
+          path: dist/dv2mv-*.dmg
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/dv2mv-*.dmg \
+            --title "${GITHUB_REF_NAME}" --generate-notes
