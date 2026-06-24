@@ -91,6 +91,15 @@ hdiutil create -volname "dv2mv ${VER}" -srcfolder "$STAGE" \
 rm -rf "$(dirname "$STAGE")"
 echo "==> built $DMG"
 
+# Sign the dmg *container* too (separate from notarizing it), so `spctl -t open`
+# blesses the disk image, not just the app inside. A notarized-but-unsigned dmg
+# still mounts and the app verifies as Notarized Developer ID, but the container
+# reports "no usable signature" — this removes that. Must run BEFORE notarize.
+if [[ -n "${DEVELOPER_ID:-}" ]]; then
+    echo "==> codesign dmg (container)"
+    codesign --force --timestamp -s "$DEVELOPER_ID" "$DMG"
+fi
+
 # ── 5. notarize + staple (gated on creds) ───────────────────────────────────
 # Always capture the submission id and pull the FULL notary log, so a failure
 # surfaces the exact cause — per-file signing errors (the real bug here was three
