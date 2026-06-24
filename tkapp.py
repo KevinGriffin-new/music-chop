@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 import os
 import platform
 import queue
@@ -44,6 +45,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from logging.handlers import RotatingFileHandler
 from tkinter import font as tkfont, messagebox, ttk
 
 import engine
@@ -52,6 +54,45 @@ import engine
 if engine.HERE not in sys.path:
     sys.path.insert(0, engine.HERE)
 from pipeline import clip_gallery
+
+# ── persistent log ──────────────────────────────────────────────────────────
+# A windowed .app sends stdout/stderr nowhere, and the in-app console vanishes
+# on quit — so a remote tester has nothing to send when a job fails. Tee the
+# console + stage output to a rotating file; "send me the log" becomes the whole
+# support flow. Never fatal: if the file can't be opened the app still runs.
+_LOG = logging.getLogger("dv2mv")
+_LOG_PATH = None
+
+
+def _log_dir() -> str:
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Logs", "dv2mv")   # macOS convention
+    return os.path.join(home, ".local", "state", "dv2mv")       # source/Linux dev
+
+
+def setup_logging() -> "str | None":
+    """Attach a rotating file handler to the dv2mv logger (idempotent). Returns
+    the log path, or None if it couldn't be created."""
+    global _LOG_PATH
+    if _LOG.handlers:
+        return _LOG_PATH
+    try:
+        d = _log_dir()
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "dv2mv.log")
+        h = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=5,
+                                encoding="utf-8")          # ~2MB × 5 = ~10MB cap
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s",
+                                         "%Y-%m-%d %H:%M:%S"))
+        _LOG.addHandler(h)
+        _LOG.setLevel(logging.INFO)
+        _LOG.propagate = False
+        _LOG_PATH = path
+    except OSError:
+        _LOG_PATH = None
+    return _LOG_PATH
+
 
 # ── IRIX / 4Dwm-flavored theme (SGI gray scheme) ────────────────────────────
 # Tweakable to match a real IRIX look. We theme ttk widgets only (buttons/
@@ -728,6 +769,8 @@ class App(tk.Tk):
         self.log.pack(fill="both", expand=True, padx=6, pady=6)
 
         self._refresh_lib_label()
+        _LOG.info("Tk %s · media library: %s",
+                  self.tk.call("info", "patchlevel"), engine.MEDIA)
         self.after(100, self._drain)
         # the progress animation only runs while a stage is in flight (see
         # _pb_start/_begin) — no idle 60ms canvas churn to compete with input.
@@ -930,8 +973,7 @@ class App(tk.Tk):
             return
         self._set_project(None)               # the old project belonged to old media
         self._refresh_lib_label()
-        self.log.insert("end", f"[media] library set to {engine.MEDIA}\n")
-        self.log.see("end")
+        self._console(f"[media] library set to {engine.MEDIA}\n")
 
     def _ensure_media(self) -> None:
         """At startup, if no valid library is set (media resolved to the code
@@ -959,8 +1001,7 @@ class App(tk.Tk):
         def created(name, track, clips):
             p = engine.new_project(engine.MEDIA, name, track, clips=clips)
             self._set_project(p)
-            self.log.insert("end", f"[project] created '{name}' → {p.dir}\n")
-            self.log.see("end")
+            self._console(f"[project] created '{name}' → {p.dir}\n")
         NewProjectDialog(self, engine.MEDIA, self.track.get().strip(),
                          on_ok=created, clips=preset_clips)
 
@@ -982,8 +1023,7 @@ class App(tk.Tk):
             name = choice.get()
             top.destroy()
             self._set_project(engine.load_project(engine.MEDIA, name))
-            self.log.insert("end", f"[project] opened '{name}'\n")
-            self.log.see("end")
+            self._console(f"[project] opened '{name}'\n")
         ttk.Button(top, text="Open", command=pick).pack(side="left", padx=8, pady=8)
         top.transient(self)
         top.grab_set()
@@ -1202,9 +1242,29 @@ class App(tk.Tk):
         self._set_project(self.project)        # refresh the count in the label
         n = (self.project.clips if self.project.clips == "all"
              else f"{len(self.project.clips)} clips")
-        self.log.insert("end",
-                        f"[project] {self.project.name}: {op} → {n}\n")
+        self._console(f"[project] {self.project.name}: {op} → {n}\n")
+
+    def _console(self, text: str) -> None:
+        """Append to the in-app console *and* the rotating log file, so the two
+        never diverge — support is 'send ~/Library/Logs/dv2mv/dv2mv.log' instead
+        of 'screenshot the panel'."""
+        self.log.insert("end", text)
         self.log.see("end")
+        _LOG.info(text.rstrip("\n"))
+
+    def report_callback_exception(self, exc, val, tb) -> None:
+        """Uncaught exception in a Tk callback. In a windowed .app these vanish
+        (no stderr); log the full traceback and point the user at the log."""
+        import traceback
+        _LOG.error("unhandled exception:\n%s",
+                   "".join(traceback.format_exception(exc, val, tb)))
+        try:
+            messagebox.showerror(
+                "dv2mv — unexpected error",
+                f"{val}\n\nDetails were written to the log:\n"
+                f"{_LOG_PATH or '(log file unavailable)'}")
+        except Exception:
+            pass
 
     # ── main-thread UI pump ────────────────────────────────────────────────
     def _drain(self) -> None:
@@ -1218,8 +1278,7 @@ class App(tk.Tk):
                     self._pb_frac = ev.frac              # feed the determinate bar
                 pct = "" if ev.frac is None else f"{ev.frac*100:3.0f}% "
                 self.status.config(text=f"{pct}{ev.message}")
-                self.log.insert("end", f"[{ev.stage}] {ev.message}\n")
-                self.log.see("end")
+                self._console(f"[{ev.stage}] {ev.message}\n")
                 if ev.stage == "error":
                     # the actionable prompt the user asked for (e.g. run Analyze)
                     messagebox.showwarning("dv2mv — can't continue",
@@ -1230,8 +1289,7 @@ class App(tk.Tk):
                     open_in_player(ev.result["video"])   # the Tk preview substitute
                 elif ev.done and ev.result.get("outputs"):
                     for p in ev.result["outputs"]:       # exported timeline files
-                        self.log.insert("end", f"  ▸ {p}\n")
-                    self.log.see("end")
+                        self._console(f"  ▸ {p}\n")
                 elif ev.done and ev.result.get("comparison"):
                     self._show_comparison(ev.result)
         except queue.Empty:
@@ -1248,8 +1306,7 @@ class App(tk.Tk):
         """Surface the arrange result/options in the status line and log."""
         line = format_arrange_summary(meta)
         self.status.config(text=f"✓ {meta.get('track', '')}: {line}")
-        self.log.insert("end", f"  ▸ {line}\n")
-        self.log.see("end")
+        self._console(f"  ▸ {line}\n")
 
     def _show_comparison(self, res: dict) -> None:
         """Log the grid × match comparison (best energy first) so you can weigh
@@ -1257,11 +1314,11 @@ class App(tk.Tk):
         then Arrange the grid + match you pick."""
         ranked = res.get("ranked") or res.get("comparison") or []
         best = res.get("best")                # winning tag, e.g. "downbeats-contrast"
-        self.log.insert("end", "  comparison — grid × match  "
-                        "(engy = fit to song; luma/hue = brightness/colour "
-                        "alternation, higher = punchier):\n")
-        self.log.insert("end", f"    {'grid':<10} {'match':<9} "
-                        f"{'engy':>5} {'luma':>5} {'hue':>5}  cuts\n")
+        self._console("  comparison — grid × match  "
+                      "(engy = fit to song; luma/hue = brightness/colour "
+                      "alternation, higher = punchier):\n")
+        self._console(f"    {'grid':<10} {'match':<9} "
+                      f"{'engy':>5} {'luma':>5} {'hue':>5}  cuts\n")
         top_grid = None
         for r in ranked:
             pct = "—" if r.get("energy_match_pct") is None else f"{r['energy_match_pct']:.0f}%"
@@ -1270,14 +1327,13 @@ class App(tk.Tk):
             star = " ★" if r.get("tag") == best else ""
             if r.get("tag") == best:
                 top_grid = r.get("grid")
-            self.log.insert("end", f"    {r.get('grid',''):<10} {r.get('match',''):<9} "
-                            f"{pct:>5} {lc:>5} {hv:>5}  {r.get('cuts')}{star}\n")
+            self._console(f"    {r.get('grid',''):<10} {r.get('match',''):<9} "
+                          f"{pct:>5} {lc:>5} {hv:>5}  {r.get('cuts')}{star}\n")
         if top_grid:
             self._last_grid = top_grid       # Arrange opens on the best-energy grid
             self._last_tag = best            # Render/Export target the winning grid-match
             self.status.config(
                 text="compared — open Arrange to pick a grid + match, then Render")
-        self.log.see("end")
 
 
 def main() -> None:
@@ -1290,6 +1346,14 @@ def main() -> None:
     # worker would finalize a Tk object off the main thread → Tcl_AsyncDelete
     # abort. We collect on the main thread from the UI pump (_drain) instead.
     gc.disable()
+
+    log_path = setup_logging()
+    _LOG.info("─" * 60)
+    _LOG.info("dv2mv starting · %s · python %s · %s",
+              _build_stamp() or "dev", platform.python_version(), platform.platform())
+    if log_path:
+        _LOG.info("log file: %s", log_path)
+
     App().mainloop()
 
 
