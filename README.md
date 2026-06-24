@@ -100,36 +100,29 @@ has a **Cancel** button that sets the worker's token.
 
 ## Install (macOS app)
 
-A self-contained **`dv2mv.app`** (the Tkinter desktop UI) is built with
-PyInstaller and shipped as a drag-to-Applications **`.dmg`** — no Python, conda,
-brew, or ffmpeg needed on the target Mac (ffmpeg/ffprobe/rubberband are bundled
-inside the app). Apple Silicon (arm64), macOS 11+.
+A self-contained **`dv2mv.app`** (the Tkinter desktop UI), **signed with a
+Developer ID and notarized by Apple**, shipped as a drag-to-Applications
+**`.dmg`** — no Python, conda, brew, or ffmpeg needed on the target Mac
+(ffmpeg/ffprobe/rubberband are bundled inside the app). Apple Silicon (arm64),
+macOS 11+.
 
-**Build it** (needs the dev env from *Setup* below, plus the build tools):
+**Download:** grab the latest `.dmg` from the
+[releases](https://github.com/KevinGriffin-new/music-chop/releases), open it, and
+drag `dv2mv.app` onto the `Applications` shortcut. It's notarized, so Gatekeeper
+opens it with a normal double-click — no right-click → Open dance.
+
+### Build it yourself
+
+(needs the dev env from *Setup* below, plus the build tools):
 
 ```bash
 pip install -r packaging/requirements-build.txt
 bash packaging/build_macos.sh        # → dist/dv2mv.app and dist/dv2mv-<ver>.dmg
 ```
 
-**Install it:** open the `.dmg` and drag `dv2mv.app` onto the `Applications`
-shortcut.
-
-### ⚠️ Unsigned build — Gatekeeper workaround (temporary)
-
-Current builds are **ad-hoc signed, not notarized** — Developer ID signing +
-Apple notarization are expected, pending a Developer Program membership. A copy
-you build locally runs without complaint, but the moment the `.dmg` is
-**downloaded** anywhere, macOS attaches a quarantine flag and Gatekeeper blocks
-it with *"Apple cannot check it for malicious software."* To run it anyway:
-
-- **Right-click** `dv2mv.app` → **Open** → **Open** (needed once), or
-- **System Settings → Privacy & Security →** click **Open Anyway**, or
-- in a terminal: `xattr -dr com.apple.quarantine /Applications/dv2mv.app`
-
-**This warning disappears once the app is notarized.** The build script turns
-signing + notarization on automatically when the credentials are present — no
-edits needed:
+A plain build is **ad-hoc signed** — fine to run locally, but a *downloaded* copy
+would hit Gatekeeper. To produce a Developer-ID-signed, notarized build like the
+release, set two env vars and the script does the rest (sign → notarize → staple):
 
 ```bash
 DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)" \
@@ -138,7 +131,7 @@ bash packaging/build_macos.sh
 ```
 
 After that, `spctl -a -vvv dist/dv2mv.app` reports `accepted` (source =
-Notarized Developer ID) and downloaders launch it with a normal double-click.
+Notarized Developer ID).
 
 The full signing + notarization recipe — creating the Developer ID cert, the
 one-time keychain partition-list fix, and recovering from a notary rejection — is
