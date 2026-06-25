@@ -113,10 +113,22 @@ opens it with a normal double-click — no right-click → Open dance.
 
 ### Build it yourself
 
-(needs the dev env from *Setup* below, plus the build tools):
+The app bundles **Tcl/Tk 9.0** — its modern macOS file panels replace the Tk 8.6
+ones that crashed (`NSSavePanel` `badPop`, SIGABRT). So the build needs a **Python
+3.13 interpreter whose `tkinter` links Tk 9**, which on macOS means Homebrew
+(conda's Python still links Tk 8.6). One-time setup of the build env:
 
 ```bash
-pip install -r packaging/requirements-build.txt
+brew install python@3.13 python-tk@3.13 tcl-tk ffmpeg rubberband
+/opt/homebrew/opt/python@3.13/bin/python3.13 -m venv ~/dv2mv-tk9-venv
+~/dv2mv-tk9-venv/bin/pip install -r requirements.txt -r packaging/requirements-build.txt
+```
+
+Then build (the script auto-detects `~/dv2mv-tk9-venv` — override with
+`DV2MV_BUILD_VENV` — and prints the Tk version it's bundling, warning if it
+isn't Tk 9):
+
+```bash
 bash packaging/build_macos.sh        # → dist/dv2mv.app and dist/dv2mv-<ver>.dmg
 ```
 

@@ -21,10 +21,35 @@ cd "$ROOT"
 
 # ── 0. preflight ────────────────────────────────────────────────────────────
 [[ "$(uname)" == "Darwin" ]] || { echo "build: macOS only." >&2; exit 1; }
-command -v pyinstaller >/dev/null || {
-    echo "build: pyinstaller not found. Run:" >&2
-    echo "       pip install -r packaging/requirements-build.txt" >&2
-    exit 1; }
+
+# Build env: a Python 3.13 venv whose tkinter links Tcl/Tk 9.0. The .app bundles
+# whatever Tcl/Tk the build interpreter links, and Tk 9's modern macOS file
+# panels replace the Tk 8.6 ones that crashed (NSSavePanel badPop, SIGABRT).
+# conda's Python still links Tk 8.6, so we build off a Homebrew python@3.13 +
+# python-tk@3.13 venv (see README "Build it yourself"). Override the location
+# with DV2MV_BUILD_VENV; falls back to a `pyinstaller` already on PATH.
+VENV="${DV2MV_BUILD_VENV:-$HOME/dv2mv-tk9-venv}"
+if [[ -x "$VENV/bin/pyinstaller" ]]; then
+    PYBIN="$VENV/bin/python"; PYINSTALLER="$VENV/bin/pyinstaller"
+elif command -v pyinstaller >/dev/null; then
+    PYBIN="$(command -v python3)"; PYINSTALLER="$(command -v pyinstaller)"
+else
+    {
+        echo "build: no build env found. Create the Tk-9 venv once:"
+        echo "  brew install python@3.13 python-tk@3.13 tcl-tk ffmpeg rubberband"
+        echo "  /opt/homebrew/opt/python@3.13/bin/python3.13 -m venv ~/dv2mv-tk9-venv"
+        echo "  ~/dv2mv-tk9-venv/bin/pip install -r requirements.txt -r packaging/requirements-build.txt"
+    } >&2
+    exit 1
+fi
+
+# Surface the Tk version we're about to bundle (TkVersion is a module-level
+# float, so this needs no display — safe in CI). Warn loudly if it isn't Tk 9:
+# a stale conda interpreter would silently ship the crashy 8.6 file panels.
+PYVER="$("$PYBIN" -c 'import sys;print(sys.version.split()[0])' 2>/dev/null || echo '?')"
+TKVER="$("$PYBIN" -c 'import tkinter;print(tkinter.TkVersion)' 2>/dev/null || echo '?')"
+echo "==> build interpreter: Python $PYVER · Tk $TKVER · $PYINSTALLER"
+[[ "$TKVER" == 9.* ]] || echo "build: WARNING — bundling Tk $TKVER, not Tk 9; the macOS file pickers may crash." >&2
 
 # ── 1. app icon: assets/icons/dv2mv-256.png → packaging/dv2mv.icns ──────────
 SRC_PNG="assets/icons/dv2mv-256.png"
@@ -49,7 +74,7 @@ fi
 # ── 2. freeze ───────────────────────────────────────────────────────────────
 echo "==> pyinstaller (clean)"
 rm -rf build dist
-pyinstaller --noconfirm packaging/dv2mv.spec
+"$PYINSTALLER" --noconfirm packaging/dv2mv.spec
 APP="dist/dv2mv.app"
 [[ -d "$APP" ]] || { echo "build: $APP not produced." >&2; exit 1; }
 

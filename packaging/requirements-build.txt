@@ -1,7 +1,10 @@
 # Build-only tools for the macOS .app (NOT runtime deps — keep out of
-# requirements.txt). Install into the same env that has the runtime stack:
+# requirements.txt). Install into the Tk-9 build venv that also has the runtime
+# stack — a Homebrew python@3.13 + python-tk@3.13 venv whose tkinter links
+# Tcl/Tk 9.0 (conda's Python links the crashy Tk 8.6). See README "Build it
+# yourself"; build_macos.sh auto-detects ~/dv2mv-tk9-venv.
 #
-#   pip install -r packaging/requirements-build.txt
+#   ~/dv2mv-tk9-venv/bin/pip install -r requirements.txt -r packaging/requirements-build.txt
 #   bash packaging/build_macos.sh
 #
 pyinstaller>=6.6
