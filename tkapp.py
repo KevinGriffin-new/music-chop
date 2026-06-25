@@ -46,7 +46,7 @@ import sys
 import threading
 import tkinter as tk
 from logging.handlers import RotatingFileHandler
-from tkinter import font as tkfont, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import engine
 
@@ -54,6 +54,11 @@ import engine
 if engine.HERE not in sys.path:
     sys.path.insert(0, engine.HERE)
 from pipeline import clip_gallery
+
+AUDIO_TYPES = [("Audio", "*.mp3 *.wav *.m4a *.flac *.aac *.ogg *.aif *.aiff"),
+               ("All files", "*.*")]
+VIDEO_TYPES = [("Video", "*.mp4 *.mov *.mkv *.m4v *.avi *.dv"),
+               ("All files", "*.*")]
 
 # ── persistent log ──────────────────────────────────────────────────────────
 # A windowed .app sends stdout/stderr nowhere, and the in-app console vanishes
@@ -806,50 +811,6 @@ class App(tk.Tk):
             return
         self.focus_force()
 
-    def _mac_pick(self, prompt, *, folder=False, multiple=False):
-        """Show the macOS file/folder picker via osascript — i.e. in its own
-        process — instead of Tk's tk_chooseDirectory/tk_getOpenFile. The bundled
-        Tk 8.6.12 crashes inside those (NSSavePanel autorelease badPop, SIGABRT)
-        and they feel unresponsive (a quick tap often won't bring the panel up).
-        osascript sidesteps the Tk dialog code entirely and can't take down the
-        app. Returns a POSIX path, a list of paths (multiple=True), or ""/[] on
-        cancel."""
-        if folder:
-            chooser = f"choose folder with prompt {json.dumps(prompt)}"
-        elif multiple:
-            chooser = (f"choose file with prompt {json.dumps(prompt)} "
-                       "with multiple selections allowed")
-        else:
-            chooser = f"choose file with prompt {json.dumps(prompt)}"
-        if multiple:
-            script = (f"set sel to ({chooser})\nset out to \"\"\n"
-                      "repeat with f in sel\n"
-                      "    set out to out & POSIX path of f & linefeed\n"
-                      "end repeat\nreturn out")
-        else:
-            script = f"return POSIX path of ({chooser})"
-        # Acknowledge the click within the ~100ms "instant" budget *before* the
-        # synchronous osascript call blocks the loop. A folder panel can take a
-        # variable beat to appear when it must enumerate an external/network
-        # volume (the library lives under /Volumes/…); without this the click
-        # feels dropped while the panel spins up. Restore the prior status on
-        # cancel; on success the caller overwrites it with the real next step.
-        empty = [] if multiple else ""
-        prev = self.status.cget("text")
-        self.status.config(text=f"{prompt} …")
-        self.update_idletasks()
-        try:
-            r = subprocess.run(["/usr/bin/osascript", "-e", script],
-                               capture_output=True, text=True)
-        except OSError:
-            self.status.config(text=prev)
-            return empty
-        if r.returncode != 0:        # cancel raises AppleScript error -128
-            self.status.config(text=prev)
-            return empty
-        out = r.stdout.strip()
-        return [p for p in out.splitlines() if p] if multiple else out
-
     # ── progress bar (drawn on a Canvas; classic look, always moving) ───────
     def _begin(self) -> None:
         self.active += 1
@@ -963,7 +924,8 @@ class App(tk.Tk):
 
     def choose_media(self) -> None:
         """Pick the media library folder (remembered for next launch)."""
-        path = self._mac_pick("Choose your dv2mv media library", folder=True)
+        path = filedialog.askdirectory(title="Choose your dv2mv media library",
+                                       mustexist=True)
         if not path:
             return
         try:
@@ -1121,7 +1083,8 @@ class App(tk.Tk):
     # ── file pickers: bring in new media from anywhere on disk ──────────────
     def add_track(self) -> None:
         """Pick an audio file and analyze it in place (no copy)."""
-        path = self._mac_pick("Add a music track")
+        path = filedialog.askopenfilename(title="Add a music track",
+                                          filetypes=AUDIO_TYPES)
         if not path:
             return
         self.track.delete(0, "end")
@@ -1191,7 +1154,8 @@ class App(tk.Tk):
 
     def add_footage(self) -> None:
         """Pick one or more videos, scene-split them, then (re)build the catalog."""
-        paths = self._mac_pick("Add video footage", multiple=True)
+        paths = filedialog.askopenfilenames(title="Add video footage",
+                                            filetypes=VIDEO_TYPES)
         if not paths:
             return
         clips = os.path.join(engine.MEDIA, "clips")
