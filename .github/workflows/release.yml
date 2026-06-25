@@ -44,18 +44,27 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: System deps (ffmpeg/rubberband are bundled into the app)
-        run: brew install ffmpeg rubberband || brew install ffmpeg
-
-      - name: Python deps (runtime stack + build tools)
+      # Build env: a Python 3.13 venv whose tkinter links Tcl/Tk 9.0. The .app
+      # bundles whatever Tcl/Tk the build interpreter links, and Tk 9's modern
+      # macOS file panels replace the Tk 8.6 ones that crashed (NSSavePanel
+      # badPop). Standard/conda CPython link Tk 8.6; Homebrew's python-tk@3.13
+      # builds _tkinter against Homebrew tcl-tk 9. build_macos.sh auto-detects
+      # ~/dv2mv-tk9-venv. (No actions/setup-python — we use the brew interpreter.)
+      - name: System deps + Tk-9 Python (ffmpeg/rubberband are bundled into the app)
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r packaging/requirements-build.txt
+          brew install python@3.13 python-tk@3.13 tcl-tk ffmpeg rubberband \
+            || brew install python@3.13 python-tk@3.13 tcl-tk ffmpeg
+
+      - name: Create the Tk-9 build venv (runtime stack + build tools)
+        run: |
+          set -euo pipefail
+          /opt/homebrew/opt/python@3.13/bin/python3.13 -m venv "$HOME/dv2mv-tk9-venv"
+          "$HOME/dv2mv-tk9-venv/bin/python" -m pip install --upgrade pip
+          "$HOME/dv2mv-tk9-venv/bin/pip" install -r requirements.txt -r packaging/requirements-build.txt
+          # fail fast if tkinter isn't actually Tk 9 — never ship the crashy 8.6 panels
+          TK="$("$HOME/dv2mv-tk9-venv/bin/python" -c 'import tkinter;print(tkinter.TkVersion)')"
+          echo "build venv → Python $("$HOME/dv2mv-tk9-venv/bin/python" -c 'import sys;print(sys.version.split()[0])') · Tk $TK"
+          case "$TK" in 9.*) ;; *) echo "::error::build venv links Tk $TK, not Tk 9"; exit 1;; esac
 
       - name: Import Developer ID certificate into a throwaway keychain
         env:

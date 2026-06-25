@@ -14,7 +14,7 @@
 #
 set -euo pipefail
 
-VER="0.1.2"
+VER="0.1.3"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # packaging/
 ROOT="$(cd "$HERE/.." && pwd)"                          # repo root
 cd "$ROOT"
