@@ -155,7 +155,7 @@ def _scenedetect_cmd(*args: str) -> list:
         return [sys.executable, "--run-scenedetect", *args]
     return ["scenedetect", *args]
 
-VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv")
+VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv", ".mpg", ".mpeg")
 
 # one-line help for each arrange grid (shared by both UIs so they stay in sync)
 GRID_HELP = {

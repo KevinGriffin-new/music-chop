@@ -38,7 +38,7 @@ from glob import glob
 import cv2
 import numpy as np
 
-VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv")
+VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv", ".mpg", ".mpeg")
 
 # matches 2004.07.18_05-29-17 anywhere in the name
 TS_RE = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})_(\d{2})-(\d{2})-(\d{2})")
