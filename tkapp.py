@@ -41,6 +41,7 @@ import logging
 import os
 import platform
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -256,6 +257,110 @@ def open_in_player(path: str) -> None:
         # `open -a Foo` exits nonzero if the app is missing — fall back cleanly
         if proc.wait() != 0:
             subprocess.Popen(["open", path])
+
+
+# ── help (HELP.md rendered in a classic scrollable dialog) ──────────────────
+HELP_PATH = os.path.join(engine.HERE, "HELP.md")
+
+_INLINE_MD = re.compile(r"(\*\*.+?\*\*|`[^`]+`)")
+
+
+def _inline_spans(s: str):
+    """Split a line into (tag, text) spans for **bold** and `code` runs."""
+    out = []
+    for piece in _INLINE_MD.split(s):
+        if not piece:
+            continue
+        if piece.startswith("**") and piece.endswith("**") and len(piece) > 4:
+            out.append(("bold", piece[2:-2]))
+        elif piece.startswith("`") and piece.endswith("`") and len(piece) > 2:
+            out.append(("code", piece[1:-1]))
+        else:
+            out.append(("text", piece))
+    return out
+
+
+def _unwrap(md: str):
+    """Merge hard-wrapped continuation lines into their paragraph/bullet, so
+    a source wrapped at 76 columns reflows instead of breaking mid-thought."""
+    out = []
+    for line in md.splitlines():
+        cont = (line and not line.startswith(("#", "- "))
+                and out and out[-1] and not out[-1].startswith("#"))
+        if cont:
+            out[-1] += " " + line.strip()
+        else:
+            out.append(line)
+    return out
+
+
+def parse_help(md: str):
+    """Markdown-lite -> (tag, text) spans for a tk.Text widget.
+
+    Understands exactly what HELP.md uses: `#`/`##` headings, `- ` bullets,
+    inline **bold** and `code`. Anything else is plain text. Pure function so
+    the tests can cover it without a display.
+    """
+    spans = []
+    for line in _unwrap(md):
+        if line.startswith("## "):
+            spans.append(("h2", line[3:] + "\n"))
+        elif line.startswith("# "):
+            spans.append(("h1", line[2:] + "\n"))
+        else:
+            body = line
+            if line.startswith("- "):
+                spans.append(("text", "  • "))
+                body = line[2:]
+            spans.extend(_inline_spans(body))
+            spans.append(("text", "\n"))
+    return spans
+
+
+class HelpWindow(tk.Toplevel):
+    """HELP.md in a scrollable read-only text dialog, IRIX-flavored."""
+
+    def __init__(self, master) -> None:
+        super().__init__(master)
+        self.title("dv2mv Help")
+        self.configure(bg=IRIX["bg"])
+        self.geometry("640x680")
+        try:
+            with open(HELP_PATH, encoding="utf-8") as fh:
+                md = fh.read()
+        except OSError:
+            md = ("# dv2mv Help\n\nHELP.md was not found next to the app "
+                  "code.\nSee the README at the project page instead.")
+
+        body = ttk.Frame(self, padding=6)
+        body.pack(fill="both", expand=True)
+        text = tk.Text(body, wrap="word", bg=IRIX["light"], fg=IRIX["fg"],
+                       relief="sunken", bd=2, padx=10, pady=8,
+                       highlightthickness=0)
+        sb = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+
+        self.text = text                      # introspectable (tests)
+        base = tkfont.nametofont("TkDefaultFont")
+        fam, size = base.actual("family"), base.actual("size")
+        text.tag_configure("h1", font=(fam, size + 5, "bold italic"),
+                           spacing1=6, spacing3=6)
+        text.tag_configure("h2", font=(fam, size + 2, "bold"),
+                           spacing1=10, spacing3=3)
+        text.tag_configure("bold", font=(fam, size, "bold"))
+        text.tag_configure("code", background=IRIX["field"],
+                           font=pick_irix_font(set(tkfont.families(self))))
+        for tag, chunk in parse_help(md):
+            text.insert("end", chunk, tag)
+        text.configure(state="disabled")
+
+        bar = ttk.Frame(self, padding=4)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Close", command=self.destroy).pack(side="right",
+                                                                 padx=4)
+        self.bind("<Escape>", lambda e: self.destroy())
 
 
 class GalleryWindow(tk.Toplevel):
@@ -474,6 +579,44 @@ class RetempoDialog(tk.Toplevel):
         self.destroy()
         if abs(bpm - self.src) >= 1:
             self.on_ok(bpm)
+
+
+class ThumbnailDialog(tk.Toplevel):
+    """Options for the thumbnail scout: winners per group + sources to skip.
+
+    The skip regex is remembered in the config — once a private tape is
+    excluded it stays excluded on every later run.
+    """
+
+    def __init__(self, master, initial_exclude: str, on_ok) -> None:
+        super().__init__(master)
+        self.title("Thumbnail suggestions")
+        self.configure(bg=IRIX["bg"])
+        self._on_ok = on_ok
+        frm = ttk.Frame(self, padding=8)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Winners per source group:").grid(
+            row=0, column=0, sticky="w")
+        self.v_per = tk.IntVar(value=8)
+        tk.Spinbox(frm, from_=1, to=24, textvariable=self.v_per,
+                   width=4).grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(frm, text="Skip sources matching:").grid(
+            row=1, column=0, sticky="w", pady=(8, 0))
+        self.v_excl = tk.StringVar(value=initial_exclude)
+        ttk.Entry(frm, textvariable=self.v_excl, width=22).grid(
+            row=1, column=1, sticky="we", padx=4, pady=(8, 0))
+        ttk.Label(frm, text="(a regex on the tape name — remembered, so "
+                            "private tapes stay out of the sheet)").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        bar = ttk.Frame(self, padding=4)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Scout", command=self._ok).pack(side="right",
+                                                             padx=4)
+        ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right")
+
+    def _ok(self) -> None:
+        self._on_ok(int(self.v_per.get()), self.v_excl.get().strip())
+        self.destroy()
 
 
 class ArrangeOptions(tk.Toplevel):
@@ -711,8 +854,11 @@ class App(tk.Tk):
         lib.pack(fill="x", padx=6, pady=(6, 0))
         self.lib_label = ttk.Label(lib, text="Library: …")
         self.lib_label.pack(side="left", padx=4)
+        ttk.Button(lib, text="Help", command=self.open_help).pack(side="right",
+                                                                  padx=4)
         ttk.Button(lib, text="Media library…",
                    command=self.choose_media).pack(side="right", padx=4)
+        self._help_win = None
 
         proj = ttk.Frame(self, padding=4)
         proj.pack(fill="x", padx=6, pady=(6, 0))
@@ -739,6 +885,8 @@ class App(tk.Tk):
                    command=self.add_footage).pack(side="left", padx=4)
         ttk.Button(src, text="Tempo…", command=self.open_retempo).pack(side="left", padx=4)
         ttk.Button(src, text="Gallery…", command=self.open_gallery).pack(side="right", padx=4)
+        ttk.Button(src, text="Thumbnails…",
+                   command=self.open_thumbnails).pack(side="right", padx=4)
 
         btns = ttk.Frame(self, padding=(6, 4))
         btns.pack(fill="x", padx=6)
@@ -1168,6 +1316,45 @@ class App(tk.Tk):
             # incremental: only catalog the newly-split clips, append to manifest
             yield from engine.catalog(clips, cat, append=True, cancel=c)
         self._spawn(chain)
+
+    def open_help(self) -> None:
+        """Show HELP.md (singleton window — a second click raises it)."""
+        if self._help_win is not None and self._help_win.winfo_exists():
+            self._help_win.lift()
+            return
+        self._help_win = HelpWindow(self)
+
+    def open_thumbnails(self) -> None:
+        """Scout cover/YouTube thumbnail frames from the catalog; opens the
+        contact sheet when done. The skip regex persists in the config."""
+        media = engine.MEDIA
+        manifest = os.path.join(media, "catalog", "manifest.csv")
+        if not os.path.exists(manifest):
+            messagebox.showinfo("dv2mv — thumbnails",
+                                "No catalog yet — Add video footage first.")
+            return
+        saved = engine.load_config().get("thumbs_exclude", "")
+
+        def go(per_group: int, exclude: str) -> None:
+            if exclude != saved:
+                cfg = engine.load_config()
+                cfg["thumbs_exclude"] = exclude
+                engine.save_config(cfg)
+            out = os.path.join(media, "thumbnails")
+
+            def chain(c):
+                final = {}
+                for ev in engine.thumbnails(manifest, out, per_group=per_group,
+                                            exclude_re=exclude, cancel=c):
+                    if ev.done:
+                        final = ev.result
+                    yield ev
+                if final.get("contact"):
+                    open_in_player(final["contact"])   # show the sheet
+
+            self._spawn(chain)
+
+        ThumbnailDialog(self, saved, on_ok=go)
 
     def open_gallery(self) -> None:
         """Open the thumbnail contact sheet for the whole library catalog.

@@ -23,6 +23,7 @@ Run:  uvicorn webapp:app --reload      (pip install fastapi uvicorn python-multi
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import shutil
@@ -33,7 +34,8 @@ from typing import List
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
+from fastapi.responses import (HTMLResponse, StreamingResponse, FileResponse,
+                               PlainTextResponse)
 
 import engine
 
@@ -331,6 +333,37 @@ def catalog_files(relpath: str):
 
 
 # ── media library (switch the media root at runtime; remembered in config) ───
+@app.get("/api/thumbnails")
+def api_thumbnails(per_group: int = 8, exclude: str = None):
+    """Scout thumbnail frames from the catalog (SSE, like the other stages).
+
+    `exclude` omitted -> the saved filter applies; passing it (even empty)
+    updates the saved filter, so a private tape stays excluded next time.
+    """
+    if exclude is None:
+        exclude = engine.load_config().get("thumbs_exclude", "")
+    else:
+        cfg = engine.load_config()
+        if cfg.get("thumbs_exclude", "") != exclude:
+            cfg["thumbs_exclude"] = exclude
+            engine.save_config(cfg)
+    out = os.path.join(MEDIA, "thumbnails")
+    job_id, cancel = _new_job()
+    return _sse(engine.thumbnails(MANIFEST, out, per_group=per_group,
+                                  exclude_re=exclude, cancel=cancel),
+                cancel=cancel, job_id=job_id)
+
+
+@app.get("/api/help", response_class=PlainTextResponse)
+def api_help():
+    """HELP.md, shared verbatim with the Tk app (one source of truth)."""
+    path = os.path.join(engine.HERE, "HELP.md")
+    if not os.path.exists(path):
+        raise HTTPException(404, "HELP.md missing from the installation")
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
 @app.get("/api/media")
 def api_media():
     """Current media library + whether it's actually set (vs. the checkout)."""
@@ -531,7 +564,14 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
     border-radius:8px;display:block">
   <h1 style="position:absolute;left:14px;bottom:6px;margin:0;color:#fff;
     font:600 24px system-ui;text-shadow:0 1px 5px #000">dv2mv</h1>
+  <button onclick="toggleHelp()" title="help" style="position:absolute;right:10px;top:8px;
+    width:28px;height:28px;border-radius:50%;border:1px solid #fff8;background:#0006;
+    color:#fff;font:600 15px system-ui;cursor:pointer">?</button>
 </div>
+
+<div id=helppanel style="display:none;position:fixed;inset:5% 10%;background:#fff;
+  border:1px solid #999;border-radius:8px;box-shadow:0 8px 40px #0006;z-index:10;
+  padding:1rem 1.6rem;overflow:auto;font-size:14px;line-height:1.45"></div>
 
 <fieldset style="margin-bottom:1rem">
 <legend>Media library</legend>
@@ -557,6 +597,10 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 </div>
 <div style="margin:.3rem 0">
   <a href="/api/gallery" target="_blank"><button type=button>View catalog gallery ↗</button></a>
+  <button type=button onclick="goThumbs()"
+    title="pick sharp, well-lit, face-bearing frames from the catalog as cover/YouTube thumbnail candidates">Thumbnail suggestions</button>
+  skip: <input id=thumbexcl value="__THUMBEXCL__" placeholder="tape regex"
+    title="sources matching this regex stay out of the sheet (remembered)" style="width:8rem">
 </div>
 </fieldset>
 
@@ -586,17 +630,17 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 
 <fieldset style="margin:1rem 0">
 <legend>Arrange options</legend>
-<label>Grid
+<label title="where cuts happen: sections = one per structural section (calmest), downbeats = one per bar (driving), beats = every N beats (fast montage), harmonic = on chord changes">Grid
   <select id=grid onchange="syncGrid()">
     <option value=sections>sections</option>
     <option value=downbeats>downbeats</option>
     <option value=beats>beats</option>
     <option value=harmonic>harmonic</option>
   </select></label>
-<label>Beats/cut <input id=bpc type=number value=4 min=1 max=32 style="width:4rem"></label>
-<label><input id=reuse type=checkbox> allow reuse</label>
-<label>Drop blurry &lt; <input id=blur type=number value=0 min=0 step=1 style="width:5rem"></label>
-<label>Clip from
+<label title="on the beats grid, cut every N beats (4 = once per bar at 4/4)">Beats/cut <input id=bpc type=number value=4 min=1 max=32 style="width:4rem"></label>
+<label title="let clips repeat when there are more slots than clips"><input id=reuse type=checkbox> allow reuse</label>
+<label title="ignore clips whose sharpness is below this (0 = keep everything)">Drop blurry &lt; <input id=blur type=number value=0 min=0 step=1 style="width:5rem"></label>
+<label title="take the slot-length piece from the clip's middle (default) or its start">Clip from
   <select id=clipfrom><option value=middle>middle</option><option value=start>start</option></select></label>
 <div id=gridhelp style="margin-top:.4rem;font-size:12px;color:#555"></div>
 </fieldset>
@@ -612,8 +656,54 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
   color:#444;word-break:break-all"></div>
 <div id=exports style="display:none;margin:.4rem 0;font:12px ui-monospace,monospace;
   color:#444;word-break:break-all"></div>
+<img id=contactimg style="width:100%;display:none;border:1px solid #ccc;border-radius:6px">
+
 <script>
 const log = m => document.getElementById('log').textContent += m + "\\n";
+
+// help: /api/help serves HELP.md (shared with the Tk app); render a tiny
+// markdown subset — headings, bullets, **bold**, `code` — nothing more.
+async function toggleHelp(){
+  const p = document.getElementById('helppanel');
+  if (p.style.display === 'block'){ p.style.display = 'none'; return; }
+  if (!p.dataset.loaded){
+    const md = await (await fetch('/api/help')).text();
+    p.innerHTML = '<button style="float:right" onclick="toggleHelp()">close ✕</button>'
+      + mdToHtml(md);
+    p.dataset.loaded = '1';
+  }
+  p.style.display = 'block';
+}
+function mdToHtml(md){
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const inline = s => esc(s).replace(/\\*\\*(.+?)\\*\\*/g,'<b>$1</b>')
+                            .replace(/`([^`]+)`/g,'<code>$1</code>');
+  // unwrap hard-wrapped continuation lines into their paragraph/bullet
+  const lines = [];
+  for (const raw of md.split('\\n')){
+    const prev = lines[lines.length - 1];
+    if (raw && !raw.startsWith('#') && !raw.startsWith('- ')
+        && prev && !prev.startsWith('#'))
+      lines[lines.length - 1] = prev + ' ' + raw.trim();
+    else lines.push(raw);
+  }
+  let html = '', list = false;
+  for (const line of lines){
+    if (line.startsWith('- ')){
+      if (!list){ html += '<ul>'; list = true; }
+      html += '<li>' + inline(line.slice(2)) + '</li>'; continue;
+    }
+    if (list){ html += '</ul>'; list = false; }
+    if (line.startsWith('## ')) html += '<h3>' + inline(line.slice(3)) + '</h3>';
+    else if (line.startsWith('# ')) html += '<h2>' + inline(line.slice(2)) + '</h2>';
+    else if (line.trim()) html += '<p>' + inline(line) + '</p>';
+  }
+  if (list) html += '</ul>';
+  return html;
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('helppanel').style.display = 'none';
+});
 const bar = () => document.getElementById('bar');
 const busy = () => bar().removeAttribute('value');   // <progress> animates when value-less
 const determinate = f => bar().value = f;
@@ -679,6 +769,13 @@ function stream(url, stage, track){
       if (stage === 'compare' && ev.result && ev.result.comparison){
         showComparison(ev.result);
       }
+      if (stage === 'thumbnails' && ev.result && ev.result.contact){
+        const img = document.getElementById('contactimg');
+        img.src = '/api/clip?path=' + encodeURIComponent(ev.result.contact)
+                + '&t=' + Date.now();          // bust the cache on re-runs
+        img.style.display = 'block';
+        log('✓ thumbnails in ' + ev.result.out_dir);
+      }
     }
   };
   es.onerror = () => { log('-- stream error --'); endStream(es); };
@@ -691,6 +788,12 @@ function syncGrid(){           // beats/cut only matters on the beats grid
   const g = $('grid').value;
   $('bpc').disabled = g !== 'beats';
   $('gridhelp').textContent = GRID_HELP[g] || '';
+}
+
+function goThumbs(){
+  const excl = $('thumbexcl').value.trim();
+  stream('/api/thumbnails?per_group=8&exclude=' + encodeURIComponent(excl),
+         'thumbnails', '');
 }
 
 function arrangeQuery(){
@@ -852,4 +955,6 @@ async function uploadFootage(){
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return INDEX.replace("/*GRIDHELP*/", json.dumps(engine.GRID_HELP))
+    saved = html.escape(engine.load_config().get("thumbs_exclude", ""))
+    return (INDEX.replace("/*GRIDHELP*/", json.dumps(engine.GRID_HELP))
+                 .replace("__THUMBEXCL__", saved))
