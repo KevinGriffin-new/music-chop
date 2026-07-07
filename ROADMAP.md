@@ -27,6 +27,15 @@ For the next context — where things stand:
 ## Next
 - **Web E2E tests** with Playwright (the web tier is a real web app; server-side
   is already covered by FastAPI TestClient).
+- **Chorus-aware arrange.** Consume the new `segments`/`chorus` analysis fields
+  in `sync_clips`: tier 1, a cost term that favors high-motion clips inside
+  `is_chorus` slots; tier 2, visual-motif reuse — map each section label to a
+  clip family (hue/luma cluster or source tape) so the same visual family
+  returns when the chorus does. Surface the chorus call in both UIs so a wrong
+  call is visible before arranging.
+- **Help.** One `HELP.md` rendered by both tiers (Tk Help menu, web `?` panel),
+  stage-by-stage walkthrough as sections; instructive empty states first,
+  web-only click-through tour later. Tooltips on the arrange knobs.
 
 ## Bigger features
 - **Export polish.** The export stage ships (OTIO + FCPXML, below). Follow-ups
@@ -86,6 +95,39 @@ precedence DV2MV_MEDIA env > saved choice > cwd);
 now an explicit union/difference/replace — `revise_clip_selection()` — not just
 a wholesale replace; both tiers);
 MPL-2.0; on sr.ht.
+
+_Session 2026-07-06 (later):_
+**lyric-fused labelling** — acoustic-only labels degenerate on real band
+recordings (on "05 Of Ash" one label ate 10/15 segments), so there's now an
+optional lyrics layer. `pipeline/lyrics_analyze.py` (runs under a separate
+`.venv-lyrics` — demucs + mlx-whisper + soundfile are NOT core deps): demucs
+vocal stem → sung regions from stem RMS → each region transcribed
+independently by mlx-whisper (word timestamps, no context-carry — whisper's
+timestamps degenerate over long vamps) → words gated by VOCAL-STEM ENERGY,
+never text stats (a real chorus vamp is textually indistinguishable from a
+hallucination loop; probed on real material — the "I'm going to run" vamp is
+the loudest singing in the song) → `<track>.lyrics.json` + cached
+`stems/<track>.vocals16k.wav`. `track_analyze` auto-discovers the sidecar:
+sung segments cluster on token-containment + acoustics fused 50/50,
+instrumental segments on acoustics alone, chorus call restricted to sung
+labels; segments carry per-segment `text`. Two hard-won constraints live in
+the lyrics_analyze docstring: torch and mlx segfault if they share a process
+(separation runs in a `--_separate` child), and the torchaudio>=2.9 save
+break. Tested: fused-labelling units + a lyrics-sidecar integration test.
+
+_Session 2026-07-06:_
+**section labels + chorus call** — `track_analyze` now clusters the segments its
+existing boundaries carve (mean chroma+MFCC per segment, scipy average-linkage
+cut at 0.6× the tallest merge) into repeated-material labels A/B/A/B…, and calls
+the chorus: the recurring label with the highest duration-weighted energy, or
+no call at all when nothing recurs (a fake chorus is worse than none). Analysis
+JSON gains `segments` `[{start,end,label,is_chorus,energy}]` + `chorus`
+(`sections` unchanged — nothing downstream breaks); summary CSV gains a
+`chorus` column ("B×2"); `--plot` shades spans by label with the chorus tinted
+stronger (the eyeball QA). Chroma/MFCC now computed once and shared by key /
+sections / HCDF (was 3× chroma_cqt). Tests: pure-logic labelling/chorus tests
++ an integration test on a synthesized quiet-verse/loud-chorus A/B/A/B track
+(`tests/test_track_analyze.py`).
 
 _Session 2026-06-21:_
 **brightness-aware matching** — `sync_clips` weighted clip↔slot cost: motion↔song
