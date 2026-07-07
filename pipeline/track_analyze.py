@@ -9,6 +9,13 @@ For each track it estimates:
   - approximate downbeats (bar starts; assumes 4/4)
   - overall key (Krumhansl-Schmuckler)
   - section boundaries (verse/chorus-type structural shifts)
+  - section labels: segments clustered by similarity (A/B/A/B...) so repeated
+    material shares a letter, plus a chorus call — the recurring label with
+    the highest energy ("" when nothing recurs; a fake chorus is worse than
+    no chorus). If a <track>.lyrics.json sidecar exists in the output dir
+    (from lyrics_analyze.py), the labels fuse lyric repetition with the
+    acoustics — on band recordings acoustics alone often can't tell sections
+    apart — and the chorus call is restricted to sung segments
   - harmonic-change points (where the harmony shifts — chord-change proxy,
     via a Harmonic Change Detection Function over chroma)
   - a normalized energy (RMS) envelope over time
@@ -28,6 +35,7 @@ Requires: librosa, numpy, scipy  (pip install librosa)
 import argparse
 import json
 import os
+import re
 import sys
 from glob import glob
 
@@ -68,10 +76,9 @@ def find_downbeats(beat_times, beat_strength, meter=4):
     return beat_times[best_phase::meter].tolist()
 
 
-def harmonic_changes(y, sr, hop):
+def harmonic_changes(chroma, sr, hop):
     """Harmonic Change Detection Function -> list of change times (seconds)."""
     import librosa
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop)
     # smooth across time, then measure frame-to-frame tonal distance
     chroma = np.apply_along_axis(
         lambda m: np.convolve(m, np.ones(9) / 9, mode="same"), axis=1, arr=chroma)
@@ -83,16 +90,178 @@ def harmonic_changes(y, sr, hop):
     return librosa.frames_to_time(peaks, sr=sr, hop_length=hop).tolist()
 
 
-def sections(y, sr, hop, k):
+def sections(chroma, mfcc, sr, hop, k):
     """Structural boundaries (seconds) via agglomerative clustering of features."""
     import librosa
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop, n_mfcc=13)
     feat = np.vstack([librosa.util.normalize(chroma, axis=0),
                       librosa.util.normalize(mfcc, axis=0)])
     k = max(2, min(k, feat.shape[1] - 1))
     bounds = librosa.segment.agglomerative(feat, k)
     return sorted(set(librosa.frames_to_time(bounds, sr=sr, hop_length=hop).tolist()))
+
+
+def _norm_cols(M):
+    """Min-max each column of an (n_seg, d) matrix onto 0..1 (flat cols -> 0)."""
+    M = np.asarray(M, dtype=float)
+    lo, hi = M.min(axis=0), M.max(axis=0)
+    span = np.where(hi > lo, hi - lo, 1.0)
+    out = (M - lo) / span
+    out[:, hi <= lo] = 0.0
+    return out
+
+
+def segment_features(bounds, sr, hop, chroma, mfcc, rms):
+    """Per-segment summary for labelling.
+
+    bounds is the boundary list in seconds ([0, ..., duration]). Returns an
+    (n_seg, d) feature matrix — mean chroma + mean MFCC per segment, every
+    dimension min-maxed across segments so both blocks weigh comparably — and
+    a 0..1 mean-RMS energy per segment.
+    """
+    def fr(t):  # seconds -> feature-frame index
+        return int(round(t * sr / hop))
+
+    n = chroma.shape[1]
+    rows, energy = [], []
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        i = min(fr(a), n - 1)
+        j = max(i + 1, min(fr(b), n))
+        rows.append(np.concatenate([chroma[:, i:j].mean(axis=1),
+                                    mfcc[:, i:j].mean(axis=1)]))
+        k0 = min(i, len(rms) - 1)
+        k1 = max(k0 + 1, min(j, len(rms)))
+        energy.append(float(np.mean(rms[k0:k1])))
+    e = np.asarray(energy)
+    if e.max() > e.min():
+        e = (e - e.min()) / (e.max() - e.min())
+    else:
+        e = np.zeros_like(e)
+    return _norm_cols(np.array(rows)), e
+
+
+def label_segments(X):
+    """Cluster segment feature rows so repeated material shares a letter.
+
+    Hierarchical (average-linkage) clustering, cut at a fraction of the tallest
+    merge: material as different as the most-different pair splits apart,
+    repeats of the same material stay together. Letters by first appearance,
+    so the labels read A/B/A/B down the track.
+    """
+    n = len(X)
+    if n <= 1:
+        return ["A"] * n
+    from scipy.cluster.hierarchy import fcluster, linkage
+    Z = linkage(X, method="average")
+    top = Z[:, 2].max()
+    if top <= 1e-9:
+        return ["A"] * n              # every segment (near-)identical
+    cl = fcluster(Z, t=0.6 * top, criterion="distance")
+    letter, out = {}, []
+    for c in cl:
+        if c not in letter:
+            letter[c] = chr(ord("A") + len(letter) % 26)
+        out.append(letter[c])
+    return out
+
+
+def segment_tokens(bounds, words):
+    """Lyric tokens per segment: each timed word (from lyrics_analyze) goes to
+    the segment containing its midpoint. bounds = [t0, ..., duration]."""
+    toks = [[] for _ in range(len(bounds) - 1)]
+    edges = np.asarray(bounds, dtype=float)
+    for w in words:
+        mid = (w["start"] + w["end"]) / 2
+        i = int(np.searchsorted(edges, mid, side="right")) - 1
+        if 0 <= i < len(toks):
+            toks[i] += re.findall(r"[a-z']+", w["w"].lower())
+    return toks
+
+
+def _containment(a, b):
+    """Token-set containment 0..1 — how much of the smaller set the two share.
+    Robust to unequal segment lengths where cosine similarity dilutes."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+
+def _cut_labels(D):
+    """label_segments' clustering recipe on a precomputed distance matrix."""
+    m = len(D)
+    if m <= 1:
+        return [1] * m
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import squareform
+    Z = linkage(squareform(D, checks=False), method="average")
+    top = Z[:, 2].max()
+    if top <= 1e-9:
+        return [1] * m
+    return list(fcluster(Z, t=0.6 * top, criterion="distance"))
+
+
+def label_segments_fused(X, toks, w_text=0.5, min_tokens=4):
+    """Labels like label_segments, plus lyric evidence.
+
+    Segments with >= min_tokens lyric tokens ("vocal") cluster on a blend of
+    token-containment distance (uni+bigram sets — repeated lyrics identify
+    repeated sections, and mis-hearings repeat consistently so accuracy
+    barely matters) and acoustic distance. The rest ("instrumental") cluster
+    on acoustics alone, so silent segments don't pollute the text space.
+
+    Returns (labels, vocal_label_set) — the caller restricts the chorus call
+    to vocal labels: a chorus is sung.
+    """
+    n = len(X)
+    vocal = [i for i in range(n) if len(toks[i]) >= min_tokens]
+    if len(vocal) < 2:
+        return label_segments(X), set()
+    from scipy.spatial.distance import pdist, squareform
+    instr = [i for i in range(n) if i not in vocal]
+    D_a = squareform(pdist(np.asarray(X, dtype=float)))
+    if D_a.max() > 0:
+        D_a = D_a / D_a.max()
+
+    sets = [set(t) | {" ".join(p) for p in zip(t, t[1:])} for t in toks]
+    D_v = np.zeros((len(vocal), len(vocal)))
+    for a, i in enumerate(vocal):
+        for b, j in enumerate(vocal):
+            if a < b:
+                d = (w_text * (1.0 - _containment(sets[i], sets[j]))
+                     + (1.0 - w_text) * D_a[i, j])
+                D_v[a, b] = D_v[b, a] = d
+    cl_v = _cut_labels(D_v)
+    cl_i = _cut_labels(D_a[np.ix_(instr, instr)]) if instr else []
+
+    key = {}
+    for pos, i in enumerate(vocal):
+        key[i] = ("v", cl_v[pos])
+    for pos, i in enumerate(instr):
+        key[i] = ("i", cl_i[pos])
+    letter, labels = {}, []
+    for i in range(n):                      # letters by first appearance
+        if key[i] not in letter:
+            letter[key[i]] = chr(ord("A") + len(letter) % 26)
+        labels.append(letter[key[i]])
+    return labels, {labels[i] for i in vocal}
+
+
+def pick_chorus(labels, energy, durations):
+    """The chorus call: among labels that RECUR (>=2 segments), the one with
+    the highest duration-weighted mean energy. Returns "" when nothing recurs
+    or the track is all one label — through-composed or mislabelled material
+    gets no chorus rather than a fake one."""
+    if len(set(labels)) < 2:
+        return ""
+    best, best_score = "", -1.0
+    for lab in sorted(set(labels)):
+        idx = [i for i, l in enumerate(labels) if l == lab]
+        if len(idx) < 2:
+            continue
+        d = float(sum(durations[i] for i in idx)) or 1.0
+        score = sum(energy[i] * durations[i] for i in idx) / d
+        if score > best_score:
+            best, best_score = lab, score
+    return best
 
 
 def downsample_env(rms, times, hz):
@@ -116,7 +285,7 @@ def _step(i, n, msg):
 
 def analyze(path, sr_target, want_plot, out_dir):
     import librosa
-    N = 7
+    N = 8
     _step(1, N, "loading audio")
     y, sr = librosa.load(path, sr=sr_target, mono=True)
     hop = 512
@@ -138,10 +307,11 @@ def analyze(path, sr_target, want_plot, out_dir):
     key = estimate_key(chroma)
 
     _step(5, N, "section boundaries")
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop, n_mfcc=13)
     k = int(round(duration / 18)) + 1  # ~ a section every 18s
-    secs = sections(y, sr, hop, k)
+    secs = sections(chroma, mfcc, sr, hop, k)
     _step(6, N, "harmonic changes")
-    hchanges = harmonic_changes(y, sr, hop)
+    hchanges = harmonic_changes(chroma, sr, hop)
 
     _step(7, N, "energy envelope")
     rms = librosa.feature.rms(y=y, hop_length=hop)[0]
@@ -149,6 +319,38 @@ def analyze(path, sr_target, want_plot, out_dir):
     env_t, env_v = downsample_env(rms, rms_times, hz=4)
 
     name = os.path.splitext(os.path.basename(path))[0]
+
+    _step(8, N, "labelling segments")
+    bounds = sorted(set([0.0] + [t for t in secs if 0 < t < duration] + [duration]))
+    X, seg_energy = segment_features(bounds, sr, hop, chroma, mfcc, rms)
+    # fuse timed lyric words (lyrics_analyze.py sidecar) into the labels when
+    # they exist — on real band recordings acoustics alone often can't tell
+    # the sections apart, but repeated lyrics can
+    lyrics_path = os.path.join(out_dir, f"{name}.lyrics.json")
+    lyr_words = []
+    if os.path.exists(lyrics_path):
+        with open(lyrics_path) as fh:
+            lyr_words = json.load(fh).get("words", [])
+    toks = segment_tokens(bounds, lyr_words) if lyr_words else None
+    if toks is not None:
+        labels, vocal_labels = label_segments_fused(X, toks)
+    else:
+        labels, vocal_labels = label_segments(X), set()
+    if vocal_labels:
+        # a chorus is sung: instrumental labels can't win the chorus call
+        masked = [l if l in vocal_labels else f"_i{i}"
+                  for i, l in enumerate(labels)]
+        chorus = pick_chorus(masked, seg_energy, np.diff(bounds))
+    else:
+        chorus = pick_chorus(labels, seg_energy, np.diff(bounds))
+    segments = []
+    for i in range(len(labels)):
+        seg = {"start": round(bounds[i], 3), "end": round(bounds[i + 1], 3),
+               "label": labels[i], "is_chorus": bool(chorus) and labels[i] == chorus,
+               "energy": round(float(seg_energy[i]), 3)}
+        if toks is not None:
+            seg["text"] = " ".join(toks[i])
+        segments.append(seg)
     result = {
         "track": name,
         "path": os.path.abspath(path),
@@ -159,6 +361,10 @@ def analyze(path, sr_target, want_plot, out_dir):
         "beats": [round(t, 3) for t in beat_times.tolist()],
         "downbeats": [round(t, 3) for t in downbeats],
         "sections": [round(t, 3) for t in secs],
+        "segments": segments,
+        "chorus": chorus or None,
+        "lyrics": ({"path": os.path.abspath(lyrics_path),
+                    "n_words": len(lyr_words)} if lyr_words else None),
         "harmonic_changes": [round(t, 3) for t in hchanges],
         "energy_envelope": {"hz": 4, "times": env_t, "rms": env_v},
     }
@@ -169,12 +375,25 @@ def analyze(path, sr_target, want_plot, out_dir):
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(14, 3))
+            # segments shaded by label (same letter = same colour); the chorus
+            # call gets a stronger tint — this PNG is the eyeball QA for it
+            palette = ["#ff8b5b", "#5bd6a0", "#c39bff", "#ffd75b",
+                       "#5bc8ff", "#ff9bd2"]
+            seg_color = {}
+            for s in segments:
+                c = seg_color.setdefault(
+                    s["label"], palette[len(seg_color) % len(palette)])
+                ax.axvspan(s["start"], s["end"], color=c,
+                           alpha=0.45 if s["is_chorus"] else 0.15, lw=0)
+                ax.text((s["start"] + s["end"]) / 2, 1.02, s["label"],
+                        ha="center", va="bottom", fontsize=8, color=c)
             ax.plot(env_t, env_v, color="#5b9dff", lw=1, label="energy")
             for t in secs:
                 ax.axvline(t, color="#ff8b5b", lw=1.2)
             for t in downbeats:
                 ax.axvline(t, color="#5bd6a0", lw=0.4, alpha=0.5)
-            ax.set_title(f"{name} — {tempo:.0f} BPM, {key}")
+            ch = f", chorus {chorus}" if chorus else ""
+            ax.set_title(f"{name} — {tempo:.0f} BPM, {key}{ch}")
             ax.set_xlabel("seconds"); ax.set_ylabel("energy"); ax.set_xlim(0, duration)
             fig.tight_layout()
             fig.savefig(os.path.join(out_dir, name + ".png"), dpi=110)
@@ -215,17 +434,27 @@ def main():
         print(f"   {res['tempo_bpm']:.0f} BPM · {res['key']} · "
               f"{len(res['sections'])} sections · "
               f"{len(res['harmonic_changes'])} harmonic changes")
+        via = " (lyrics-fused)" if res.get("lyrics") else ""
+        spans = [s for s in res["segments"] if s["is_chorus"]]
+        if spans:
+            where = ", ".join(f"{s['start']:.0f}–{s['end']:.0f}s" for s in spans)
+            print(f"   chorus: {res['chorus']} ×{len(spans)}  ({where}){via}")
+        else:
+            print(f"   chorus: none called (no recurring section){via}")
         summary.append(res)
 
     import csv
     with open(os.path.join(args.out, "tracks_summary.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["track", "duration_s", "tempo_bpm", "key", "n_beats",
-                    "n_downbeats", "n_sections", "n_harmonic_changes"])
+                    "n_downbeats", "n_sections", "chorus", "n_harmonic_changes"])
         for r in summary:
+            nch = sum(1 for s in r["segments"] if s["is_chorus"])
             w.writerow([r["track"], r["duration_s"], r["tempo_bpm"], r["key"],
                         len(r["beats"]), len(r["downbeats"]),
-                        len(r["sections"]), len(r["harmonic_changes"])])
+                        len(r["sections"]),
+                        f"{r['chorus']}×{nch}" if r["chorus"] else "",
+                        len(r["harmonic_changes"])])
 
     print(f"\nDone. {len(summary)} tracks → {args.out}")
     print(f"  summary: {os.path.join(args.out, 'tracks_summary.csv')}")

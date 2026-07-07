@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .venv/
+.venv-lyrics/
 venv/
 env/
 
@@ -19,6 +20,8 @@ env/
 *.m4v
 *.avi
 *.dv
+*.mpg
+*.mpeg
 *.mp3
 *.wav
 *.flac
