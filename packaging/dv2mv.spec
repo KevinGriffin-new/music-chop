@@ -115,8 +115,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "dv2mv",
         "CFBundleDisplayName": "dv2mv",
-        "CFBundleShortVersionString": "0.2.1",
-        "CFBundleVersion": "0.2.1",
+        "CFBundleShortVersionString": "0.2.2",
+        "CFBundleVersion": "0.2.2",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "11.0",
         # The app shells out to bundled CLIs; it is not a document-based app.

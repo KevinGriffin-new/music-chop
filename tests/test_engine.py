@@ -924,6 +924,19 @@ def test_thumbnails_stage_writes_contact_sheet(clips_dir, tmp_path):
 
 @requires_cv2
 @requires_ffmpeg
+def test_thumbnail_scout_faces_optional(clips_dir, monkeypatch):
+    """OpenCV 5 removed CascadeClassifier — the scout must degrade to
+    sharpness/exposure ranking, never crash (broke the 0.2.1 app)."""
+    from pipeline import thumbnail_scout as ts
+    monkeypatch.delattr(ts.cv2, "CascadeClassifier", raising=False)
+    assert ts.face_counter() is None
+    clip = os.path.join(clips_dir, sorted(os.listdir(clips_dir))[0])
+    best = ts.best_frame(clip, None)
+    assert best is not None and best[3] == 0      # scored, zero faces
+
+
+@requires_cv2
+@requires_ffmpeg
 def test_thumbnails_exclude_all_fails_loud(clips_dir, tmp_path):
     cat = tmp_path / "catalog"
     drain(engine.catalog(clips_dir, str(cat)))

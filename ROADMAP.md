@@ -37,6 +37,14 @@ For the next context — where things stand:
   states (no footage / no analyzed track panes explain the next step), Tk
   tooltips on the ArrangeOptions dialog, web-only click-through tour later.
 
+- **OpenCV 5 migration.** requirements pins `opencv-python<5`: OpenCV 5
+  removed the legacy Haar CascadeClassifier + bundled XMLs that
+  thumbnail_scout's face scoring uses (it crashed the 0.2.1 app; the scout
+  now degrades gracefully without a detector). Proper fix: vendor the YuNet
+  `face_detection_yunet` ONNX model (~230 KB, from opencv/opencv_zoo) into
+  assets/models/ and use `cv2.FaceDetectorYN` (present in 4.5.4+ and 5.x),
+  keeping Haar as the fallback — then drop the pin.
+
 ## Bigger features
 - **Export polish.** The export stage ships (OTIO + FCPXML, below). Follow-ups
   if Resolve import needs them: spatial/scale conform per clip, EDL as a third

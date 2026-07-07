@@ -52,8 +52,31 @@ def prescore(rows):
     return out
 
 
-def best_frame(path, cascade, n_samples=7):
-    """(score, frame, t_seconds) of the best frame in the clip's middle half."""
+def face_counter():
+    """count(gray) -> n_faces using the best detector this cv2 has, or None.
+
+    OpenCV 5 removed the legacy Haar CascadeClassifier and the bundled
+    cascade XMLs (its FaceDetectorYN/YuNet replacement needs a model file we
+    don't vendor yet — see ROADMAP). Faces are a bonus scoring term, never a
+    requirement, so a build without a detector degrades instead of crashing.
+    """
+    cls = getattr(cv2, "CascadeClassifier", None)
+    data = getattr(cv2, "data", None)
+    if cls is None or data is None:
+        return None
+    xml = os.path.join(data.haarcascades, "haarcascade_frontalface_default.xml")
+    if not os.path.exists(xml):
+        return None
+    cascade = cls(xml)
+    if cascade.empty():
+        return None
+    return lambda gray: len(cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40)))
+
+
+def best_frame(path, count_faces, n_samples=7):
+    """(score, frame, t_seconds, n_faces) of the best frame in the clip's
+    middle half. count_faces may be None (no face detector available)."""
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         return None
@@ -74,11 +97,10 @@ def best_frame(path, cascade, n_samples=7):
         if mean < 0.12:                        # unusably dark
             continue
         lap = cv2.Laplacian(gray, cv2.CV_64F).var()
-        faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5,
-                                         minSize=(40, 40))
-        score = lap * luma_sweet(mean) * (1 + 0.8 * min(len(faces), 3))
+        n_faces = count_faces(gray) if count_faces else 0
+        score = lap * luma_sweet(mean) * (1 + 0.8 * min(n_faces, 3))
         if best is None or score > best[0]:
-            best = (score, frame, idx / fps, len(faces))
+            best = (score, frame, idx / fps, n_faces)
     cap.release()
     return best
 
@@ -130,8 +152,10 @@ def main():
     for r in rows:
         groups.setdefault(group_of(r), []).append(r)
 
-    cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    count_faces = face_counter()
+    if count_faces is None:
+        print("note: no face detector in this OpenCV build — ranking by "
+              "sharpness/exposure only", flush=True)
     os.makedirs(args.out, exist_ok=True)
 
     winners = []
@@ -142,7 +166,7 @@ def main():
               f"({len(ranked)} candidates)", flush=True)
         scored = []
         for pre, r in ranked:
-            b = best_frame(r["clip"], cascade)
+            b = best_frame(r["clip"], count_faces)
             if b:
                 scored.append((b[0] * (0.5 + 0.5 * pre), b, r))
         scored.sort(key=lambda t: -t[0])

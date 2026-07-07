@@ -10,7 +10,10 @@
 numpy
 scipy
 librosa            # musical analysis (pulls in numba)
-opencv-python      # clip visual features
+opencv-python<5    # clip visual features. OpenCV 5 removed the legacy Haar
+                   # CascadeClassifier + bundled cascade XMLs that
+                   # thumbnail_scout's face scoring uses; pin to 4.x until we
+                   # migrate to FaceDetectorYN/YuNet (needs a vendored model).
 scikit-learn       # clustering / similarity ordering
 matplotlib         # optional analysis plots (track_analyze --plot)
 pillow             # Tk gallery: decode catalog thumbs (JPEG) into PhotoImages
