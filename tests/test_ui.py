@@ -774,3 +774,97 @@ def test_render_finds_suffixed_script_and_completes(render_client):
     assert os.path.exists(os.path.join(cat, "cut-My Song-beats.mp4"))
     # the done event hands back the cut path for the <video> to play via /api/clip
     assert "cut-My Song-beats.mp4" in body
+
+
+# ── help ─────────────────────────────────────────────────────────────────────
+
+def test_help_endpoint_serves_help_md(client):
+    r = client.get("/api/help")
+    assert r.status_code == 200
+    assert "Arrange" in r.text and r.text.startswith("# dv2mv Help")
+    # the index page has the button + panel that render it
+    page = client.get("/").text
+    assert "toggleHelp" in page and "helppanel" in page
+
+
+def test_help_parser_spans():
+    tkinter = pytest.importorskip("tkinter")  # noqa: F841  (import side only)
+    from tkapp import parse_help
+    spans = parse_help("# Title\n## Sect\n- a **b** c\n\nplain `x`")
+    assert spans[0] == ("h1", "Title\n")
+    assert spans[1] == ("h2", "Sect\n")
+    assert ("bold", "b") in spans and ("code", "x") in spans
+    # the bullet keeps its marker and the line ends with a newline span
+    assert ("text", "  • ") in spans and spans[-1] == ("text", "\n")
+    # hard-wrapped continuation lines reflow into their paragraph/bullet
+    from tkapp import _unwrap
+    assert _unwrap("one\ntwo\n\n- b\n  cont\n# H") == \
+        ["one two", "", "- b cont", "# H"]
+
+
+def test_tk_help_window_renders_and_is_singleton(app):
+    app.open_help()
+    w = app._help_win
+    try:
+        assert w.winfo_exists()
+        body = w.text.get("1.0", "end")
+        assert "Quick start" in body and "Arrange" in body
+        assert w.text.cget("state") == "disabled"     # read-only
+        app.open_help()                               # raises, doesn't stack
+        assert app._help_win is w
+    finally:
+        if w.winfo_exists():
+            w.destroy()
+
+
+def test_help_md_covers_every_stage_button():
+    with open(os.path.join(REPO, "HELP.md"), encoding="utf-8") as fh:
+        md = fh.read()
+    for topic in ("Analyze", "Arrange", "Compare", "Render", "Export",
+                  "Gallery", "Tempo", "Media library", "Thumbnail"):
+        assert topic in md, f"HELP.md says nothing about {topic}"
+
+
+# ── thumbnails ───────────────────────────────────────────────────────────────
+
+def test_thumbnails_endpoint_streams_and_persists_exclude(client, monkeypatch):
+    def fake(manifest, out, per_group=8, exclude_re="", cancel=None):
+        yield webapp.engine.ProgressEvent(
+            "thumbnails", "ok", 1.0, True,
+            {"contact": "/x/_contact.jpg", "out_dir": "/x"})
+    monkeypatch.setattr(webapp.engine, "thumbnails", fake)
+    body = client.get("/api/thumbnails", params={"exclude": "^private"}).text
+    assert '"done": true' in body and "_contact.jpg" in body
+    assert webapp.engine.load_config().get("thumbs_exclude") == "^private"
+
+    # param omitted -> the saved filter flows through to the stage
+    seen = {}
+    def spy(manifest, out, per_group=8, exclude_re="", cancel=None):
+        seen["exclude"] = exclude_re
+        yield webapp.engine.ProgressEvent("thumbnails", "ok", 1.0, True, {})
+    monkeypatch.setattr(webapp.engine, "thumbnails", spy)
+    client.get("/api/thumbnails")
+    assert seen["exclude"] == "^private"
+
+
+def test_index_has_thumbnail_button(client):
+    page = client.get("/").text
+    assert "goThumbs" in page and "id=thumbexcl" in page and "contactimg" in page
+    assert "__THUMBEXCL__" not in page            # placeholder filled
+
+
+def test_tk_thumbnail_dialog_returns_options(app):
+    import tkapp
+    got = {}
+    dlg = tkapp.ThumbnailDialog(app, "^white",
+                                on_ok=lambda p, e: got.update(per=p, excl=e))
+    try:
+        app.update_idletasks()
+        assert dlg.v_excl.get() == "^white"       # saved filter prefilled
+        dlg.v_per.set(5)
+        dlg._ok()
+        assert got == {"per": 5, "excl": "^white"}
+    finally:
+        if dlg.winfo_exists():
+            dlg.destroy()
+    assert hasattr(tkapp.App, "open_thumbnails")  # the button's target

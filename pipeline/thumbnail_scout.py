@@ -135,9 +135,11 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     winners = []
-    for gname, grows in sorted(groups.items()):
+    for gi, (gname, grows) in enumerate(sorted(groups.items()), 1):
         ranked = prescore(grows)[:args.candidates]
-        print(f"[{gname}] scanning {len(ranked)} candidate clips...", flush=True)
+        # progress marker parsed by engine.thumbnails() ("PROG i/n msg")
+        print(f"PROG {gi}/{len(groups)} scanning {gname} "
+              f"({len(ranked)} candidates)", flush=True)
         scored = []
         for pre, r in ranked:
             b = best_frame(r["clip"], cascade)

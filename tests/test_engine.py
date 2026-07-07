@@ -900,3 +900,33 @@ def test_compare_project_sweeps_into_project_dir(tmp_path, smoke_manifest):
     expect = sorted(f"render-Song-{g}-{m}.sh"
                     for g in ("sections", "downbeats") for m in engine.DEFAULT_MATCHES)
     assert have == expect
+
+
+# ── thumbnails (cover-frame suggestions from the catalog) ────────────────────
+def test_thumbnails_requires_manifest(tmp_path):
+    with pytest.raises(engine.StageError, match="Add footage"):
+        drain(engine.thumbnails(str(tmp_path / "nope.csv"), str(tmp_path / "o")))
+
+
+@requires_cv2
+@requires_ffmpeg
+def test_thumbnails_stage_writes_contact_sheet(clips_dir, tmp_path):
+    cat = tmp_path / "catalog"
+    drain(engine.catalog(clips_dir, str(cat)))
+    out = tmp_path / "thumbnails"
+    evs = drain(engine.thumbnails(str(cat / "manifest.csv"), str(out)))
+    assert evs[-1].done
+    contact = evs[-1].result["contact"]
+    assert os.path.exists(contact)
+    jpgs = [f for f in os.listdir(out) if f.endswith(".jpg") and f != "_contact.jpg"]
+    assert jpgs, "no winner thumbnails written"
+
+
+@requires_cv2
+@requires_ffmpeg
+def test_thumbnails_exclude_all_fails_loud(clips_dir, tmp_path):
+    cat = tmp_path / "catalog"
+    drain(engine.catalog(clips_dir, str(cat)))
+    with pytest.raises(engine.StageError):
+        drain(engine.thumbnails(str(cat / "manifest.csv"),
+                                str(tmp_path / "o"), exclude_re="."))

@@ -125,6 +125,7 @@ SCRIPT = {
     "analyze":  os.path.join(PIPELINE, "track_analyze.py"),
     "sync":     os.path.join(PIPELINE, "sync_clips.py"),
     "export":   os.path.join(PIPELINE, "export_timeline.py"),
+    "thumbs":   os.path.join(PIPELINE, "thumbnail_scout.py"),
 }
 
 # ── frozen-app dispatch ─────────────────────────────────────────────────────
@@ -571,6 +572,44 @@ def catalog(
               "thumbs": os.path.join(out_dir, "thumbs")}
     _require(st, {"manifest": result["manifest"]}, tail)
     yield ProgressEvent(st, "Catalog complete.", 1.0, True, result)
+
+
+# ── thumbnails (suggest cover/YouTube frames from the catalog) ──────────────
+def thumbnails(
+    manifest: str,
+    out_dir: str,
+    per_group: int = 8,
+    exclude_re: str = "",
+    cancel: CancelToken = None,
+) -> Iterator[ProgressEvent]:
+    """Run thumbnail_scout over the catalog → 1280x720 JPEGs + _contact.jpg.
+
+    Pre-ranks clips on cataloged features, frame-scans the finalists at full
+    resolution (sharpness + faces), and writes the winners per source group.
+    `exclude_re` keeps whole sources out of the sheet (private tapes); both
+    front ends persist it in the config so the filter survives relaunches.
+    """
+    st = "thumbnails"
+    if not os.path.exists(manifest):
+        raise StageError("thumbnails: no catalog manifest yet — Add footage "
+                         "(and let it catalog) first.")
+    os.makedirs(out_dir, exist_ok=True)
+    cmd = _pipeline_cmd("thumbs", manifest, "-o", out_dir,
+                        "--per-group", str(per_group))
+    if exclude_re:
+        cmd += ["--exclude-re", exclude_re]
+    yield ProgressEvent(st, "scouting thumbnail frames…")
+    tail: list[str] = []
+    for line in _stream(cmd, cwd=MEDIA, cancel=cancel):
+        tail = (tail + [line])[-25:]
+        m = _PROG.search(line)
+        if m:
+            i, n = int(m.group(1)), int(m.group(2))
+            yield ProgressEvent(st, m.group(3) or "scanning", i / max(n, 1))
+    contact = os.path.join(out_dir, "_contact.jpg")
+    _require(st, {"contact": contact}, tail)
+    yield ProgressEvent(st, "Thumbnail suggestions ready.", 1.0, True,
+                        {"out_dir": out_dir, "contact": contact})
 
 
 # ── stage 3: analyze (musical structure of a track) ────────────────────────
