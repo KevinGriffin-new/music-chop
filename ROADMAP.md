@@ -33,9 +33,9 @@ For the next context — where things stand:
   clip family (hue/luma cluster or source tape) so the same visual family
   returns when the chorus does. Surface the chorus call in both UIs so a wrong
   call is visible before arranging.
-- **Help.** One `HELP.md` rendered by both tiers (Tk Help menu, web `?` panel),
-  stage-by-stage walkthrough as sections; instructive empty states first,
-  web-only click-through tour later. Tooltips on the arrange knobs.
+- **Help follow-ups.** (Core shipped — see session log.) Instructive empty
+  states (no footage / no analyzed track panes explain the next step), Tk
+  tooltips on the ArrangeOptions dialog, web-only click-through tour later.
 
 ## Bigger features
 - **Export polish.** The export stage ships (OTIO + FCPXML, below). Follow-ups
@@ -95,6 +95,28 @@ precedence DV2MV_MEDIA env > saved choice > cwd);
 now an explicit union/difference/replace — `revise_clip_selection()` — not just
 a wholesale replace; both tiers);
 MPL-2.0; on sr.ht.
+
+_Session 2026-07-06 (thumbnails button):_
+**Thumbnail suggestions in both tiers** — thumbnail_scout promoted from
+tools/ to pipeline/ (so the frozen app ships it; PROG markers added), wrapped
+as `engine.thumbnails()` (fail-loud on a missing catalog, real progress per
+source group). Tk: a Thumbnails… button + options dialog (winners per group,
+skip-sources regex) that opens the contact sheet in the viewer when done.
+Web: a Thumbnail suggestions button + skip field, SSE progress, contact sheet
+shown inline. The skip regex persists in the config (`thumbs_exclude`) and
+prefills both UIs — an excluded private tape STAYS excluded. Verified live
+end-to-end in the web tier against the real library.
+
+_Session 2026-07-06 (help):_
+**Help in both tiers** — one `HELP.md` at the repo root is the single source
+of truth (quick start, media-library rules, every stage + arrange knob,
+chorus/lyrics notes, troubleshooting). Tk: a Help button (singleton window,
+markdown-lite rendered into a themed `tk.Text` via the pure `parse_help` —
+headings/bullets/**bold**/`code`, hard-wrapped lines reflowed by `_unwrap`).
+Web: `?` button on the hero → `/api/help` + a ~30-line client renderer of the
+same subset; tooltips on the arrange controls. Bundled into the .app via the
+spec datas. Tests: endpoint, parser/unwrap, HelpWindow widget, and a
+HELP.md-mentions-every-stage guard.
 
 _Session 2026-07-06 (later):_
 **lyric-fused labelling** — acoustic-only labels degenerate on real band

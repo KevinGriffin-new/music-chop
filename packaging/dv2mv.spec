@@ -42,6 +42,9 @@ for pkg in (
 datas += [
     (os.path.join(ROOT, "assets"), "assets"),
     (os.path.join(ROOT, "pipeline"), "pipeline"),
+    # HELP.md sits next to engine.py in the bundle — both front ends read it
+    # from engine.HERE (Tk Help window, web /api/help)
+    (os.path.join(ROOT, "HELP.md"), "."),
 ]
 
 # ── vendored native binaries → <bundle>/bin (entry.py prepends it to PATH) ──
@@ -112,8 +115,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "dv2mv",
         "CFBundleDisplayName": "dv2mv",
-        "CFBundleShortVersionString": "0.2.0",
-        "CFBundleVersion": "0.2.0",
+        "CFBundleShortVersionString": "0.2.1",
+        "CFBundleVersion": "0.2.1",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "11.0",
         # The app shells out to bundled CLIs; it is not a document-based app.
