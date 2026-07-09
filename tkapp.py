@@ -962,9 +962,17 @@ class TourDialog(tk.Toplevel):
         self.bind("<Escape>", lambda e: self.close())
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.after(20, self.focus_force)
-        # re-position whenever the highlight target or the window moves
-        self._move_handle = None
-        self.bind("<Configure>", lambda e: self._relayout())
+        # Reposition the highlight when the target or window moves — but through a
+        # debounced, idempotent path. Deiconifying/lifting the marker windows and
+        # lifting this dialog themselves emit <Configure> on macOS; binding
+        # _relayout straight to <Configure> fed that back into more lifts, an event
+        # storm that wedged the tour on the first step that shows markers ("stuck
+        # at step one or two"). We coalesce Configure bursts into one after() call
+        # and skip the work when the marker geometry hasn't actually changed.
+        self._move_handle = None      # pending after() id for a debounced relayout
+        self._laying_out = False      # re-entrancy guard for _relayout
+        self._last_boxes = None       # last marker geometry set (the loop breaker)
+        self.bind("<Configure>", self._on_configure)
         self._render()
 
     def _make_marker(self):
@@ -1002,7 +1010,7 @@ class TourDialog(tk.Toplevel):
             self.demo.pack_forget()
         self.back_btn.config(state="normal" if self._i > 0 else "disabled")
         self.next_btn.config(text="Done" if self._i == len(self._steps) - 1 else "Next")
-        self._relayout()
+        self._relayout(force=True)
 
     def _clamp_render(self):
         if self._i < 0:
@@ -1026,43 +1034,79 @@ class TourDialog(tk.Toplevel):
     def _target_widget(self, name: str):
         return self.master._tour_targets.get(name)
 
-    def _relayout(self) -> None:
-        """Draw a thick outline around the current target widget, sized to its
-        on-screen geometry. Re-run on each step + window move/configure."""
-        step = self._steps[self._i]
-        w = self._target_widget(step["target"])
-        if w is None or step["target"] == "root":
-            self._hide_markers()
+    def _on_configure(self, _event=None) -> None:
+        """Debounce a burst of <Configure> events into a single relayout. If one is
+        already scheduled we drop this event, so a storm collapses to one call."""
+        if self._move_handle is not None:
             return
-        try:
-            self.update_idletasks()
-            x = w.winfo_rootx()
-            y = w.winfo_rooty()
-            ww = w.winfo_width()
-            wh = w.winfo_height()
-        except tk.TclError:
-            self._hide_markers()
-            return
-        if ww <= 1 or wh <= 1:
-            self._hide_markers()
-            return
+        self._move_handle = self.after(30, self._deferred_relayout)
 
-        pad = 4
-        width = 4
-        boxes = (
-            (x - pad, y - pad, ww + pad * 2, width),
-            (x - pad, y + wh + pad - width, ww + pad * 2, width),
-            (x - pad, y - pad, width, wh + pad * 2),
-            (x + ww + pad - width, y - pad, width, wh + pad * 2),
-        )
-        for marker, (mx, my, mw, mh) in zip(self._markers, boxes):
+    def _deferred_relayout(self) -> None:
+        self._move_handle = None
+        self._relayout()
+
+    def _relayout(self, force: bool = False) -> None:
+        """Outline the current target with the four marker strips, sized to its
+        on-screen geometry.
+
+        `force` (a step change) recomputes and lifts the dialog above the markers.
+        The debounced <Configure> path passes force=False and no-ops when the target
+        geometry is unchanged — that idempotence, plus never lifting the dialog off
+        the Configure path, is what breaks the deiconify→Configure→relayout storm
+        that used to wedge the tour on its first marker-bearing step."""
+        if self._laying_out:
+            return
+        self._laying_out = True
+        try:
+            step = self._steps[self._i]
+            w = self._target_widget(step["target"])
+            if w is None or step["target"] == "root":
+                self._last_boxes = None
+                self._hide_markers()
+                return
             try:
-                marker.geometry(f"{mw}x{mh}+{mx}+{my}")
-                marker.deiconify()
-                marker.lift(self.master)
+                if force:
+                    self.update_idletasks()
+                x = w.winfo_rootx()
+                y = w.winfo_rooty()
+                ww = w.winfo_width()
+                wh = w.winfo_height()
             except tk.TclError:
-                pass
-        self.lift()
+                self._last_boxes = None
+                self._hide_markers()
+                return
+            if ww <= 1 or wh <= 1:
+                self._last_boxes = None
+                self._hide_markers()
+                return
+
+            pad = 4
+            width = 4
+            boxes = (
+                (x - pad, y - pad, ww + pad * 2, width),
+                (x - pad, y + wh + pad - width, ww + pad * 2, width),
+                (x - pad, y - pad, width, wh + pad * 2),
+                (x + ww + pad - width, y - pad, width, wh + pad * 2),
+            )
+            # Loop breaker: if the geometry is exactly what we last set, leave the
+            # marker windows alone — re-lifting them is what re-emits <Configure>.
+            # Only a genuine move, or a forced step change, does any window work.
+            if not force and boxes == self._last_boxes:
+                return
+            self._last_boxes = boxes
+            for marker, (mx, my, mw, mh) in zip(self._markers, boxes):
+                try:
+                    marker.geometry(f"{mw}x{mh}+{mx}+{my}")
+                    marker.deiconify()
+                    marker.lift(self.master)
+                except tk.TclError:
+                    pass
+            # Lift the dialog above the markers only on a step change. Doing it on
+            # every Configure is what fed the storm.
+            if force:
+                self.lift()
+        finally:
+            self._laying_out = False
 
     def _hide_markers(self) -> None:
         for marker in self._markers:
@@ -1072,6 +1116,12 @@ class TourDialog(tk.Toplevel):
                 pass
 
     def close(self) -> None:
+        if self._move_handle is not None:
+            try:
+                self.after_cancel(self._move_handle)
+            except tk.TclError:
+                pass
+            self._move_handle = None
         for marker in self._markers:
             try:
                 marker.destroy()
