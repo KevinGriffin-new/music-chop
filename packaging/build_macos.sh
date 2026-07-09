@@ -14,10 +14,21 @@
 #
 set -euo pipefail
 
-VER="0.2.2"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # packaging/
 ROOT="$(cd "$HERE/.." && pwd)"                          # repo root
 cd "$ROOT"
+
+VER="${DV2MV_VERSION:-}"
+if [[ -z "$VER" ]]; then
+    VER="$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//' || true)"
+fi
+if [[ -z "$VER" ]]; then
+    VER="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+fi
+if [[ -z "$VER" ]]; then
+    VER="0.2.2"
+fi
+export DV2MV_VERSION="$VER"
 
 # ── 0. preflight ────────────────────────────────────────────────────────────
 [[ "$(uname)" == "Darwin" ]] || { echo "build: macOS only." >&2; exit 1; }

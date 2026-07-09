@@ -123,6 +123,8 @@ IRIX_MENU_FONT = ("Helvetica", 20, "italic")   # slanted menu/label text (try 20
 IRIX_FONT_FAMILY = "Irix Screen Mono 15"        # fixed shell font
 IRIX_FONT_FALLBACK = "Menlo"            # macOS mono; any mono works
 IRIX_FONT_SIZE = -15                    # negative = pixels (crisp for a bitmap font)
+TOUR_BODY_FONT = ("Helvetica", 18)
+TOUR_DEMO_FONT = ("Helvetica", 16)
 
 GRIDS = ["sections", "downbeats", "beats", "harmonic"]
 
@@ -918,11 +920,9 @@ class TourDialog(tk.Toplevel):
         self.configure(bg=IRIX["bg"])
         self._steps = engine.TOUR_STEPS
         self._i = 0
-        self._overlay = None    # the Canvas rectangle id marking the current target
-        # stacked above the root window for the highlight, but below the dialog
-        self._marker = tk.Canvas(master, height=0, width=0, highlightthickness=0,
-                                 bg=master.cget("bg"))
-        self._marker.place(x=0, y=0, relwidth=1, relheight=1)
+        # Four thin border windows mark the current target without covering the
+        # main app with an opaque canvas on platforms lacking transparent Tk.
+        self._markers = [self._make_marker() for _ in range(4)]
 
         body = ttk.Frame(self, padding=10)
         body.pack(fill="both", expand=True)
@@ -939,13 +939,15 @@ class TourDialog(tk.Toplevel):
 
         self.body = tk.Text(body, wrap="word", width=52, height=10,
                             bg=IRIX["light"], fg=IRIX["fg"], relief="sunken", bd=2,
-                            padx=8, pady=6, highlightthickness=0)
+                            padx=8, pady=6, highlightthickness=0,
+                            font=TOUR_BODY_FONT)
         self.body.pack(fill="both", expand=True)
 
         self.cue = ttk.Label(body, text="", foreground="#2a6a2a", font=IRIX_MENU_FONT)
         self.cue.pack(anchor="w", pady=(6, 0))
         self.demo = ttk.Label(body, text="", foreground="#444",
-                              wraplength=380, justify="left")
+                              wraplength=380, justify="left",
+                              font=TOUR_DEMO_FONT)
         self.demo.pack(anchor="w", pady=(2, 0))
 
         bar = ttk.Frame(self, padding=4)
@@ -964,6 +966,17 @@ class TourDialog(tk.Toplevel):
         self._move_handle = None
         self.bind("<Configure>", lambda e: self._relayout())
         self._render()
+
+    def _make_marker(self):
+        marker = tk.Toplevel(self.master)
+        marker.withdraw()
+        marker.overrideredirect(True)
+        marker.configure(bg=self.OVERLAY_COLOR)
+        try:
+            marker.transient(self.master)
+        except tk.TclError:
+            pass
+        return marker
 
     def _on_pick(self):
         i = self.step_var.get() - 1
@@ -1016,35 +1029,54 @@ class TourDialog(tk.Toplevel):
     def _relayout(self) -> None:
         """Draw a thick outline around the current target widget, sized to its
         on-screen geometry. Re-run on each step + window move/configure."""
-        try:
-            if not self._marker.winfo_exists():
-                return
-        except tk.TclError:
-            return
         step = self._steps[self._i]
         w = self._target_widget(step["target"])
-        self._marker.delete("all")
         if w is None or step["target"] == "root":
+            self._hide_markers()
             return
         try:
             self.update_idletasks()
-            x = w.winfo_rootx() - self.master.winfo_rootx()
-            y = w.winfo_rooty() - self.master.winfo_rooty()
+            x = w.winfo_rootx()
+            y = w.winfo_rooty()
             ww = w.winfo_width()
             wh = w.winfo_height()
         except tk.TclError:
+            self._hide_markers()
             return
         if ww <= 1 or wh <= 1:
+            self._hide_markers()
             return
-        self._marker.create_rectangle(x - 4, y - 4, x + ww + 4, y + wh + 4,
-                                       outline=self.OVERLAY_COLOR, width=4,
-                                       tags="hl")
+
+        pad = 4
+        width = 4
+        boxes = (
+            (x - pad, y - pad, ww + pad * 2, width),
+            (x - pad, y + wh + pad - width, ww + pad * 2, width),
+            (x - pad, y - pad, width, wh + pad * 2),
+            (x + ww + pad - width, y - pad, width, wh + pad * 2),
+        )
+        for marker, (mx, my, mw, mh) in zip(self._markers, boxes):
+            try:
+                marker.geometry(f"{mw}x{mh}+{mx}+{my}")
+                marker.deiconify()
+                marker.lift(self.master)
+            except tk.TclError:
+                pass
+        self.lift()
+
+    def _hide_markers(self) -> None:
+        for marker in self._markers:
+            try:
+                marker.withdraw()
+            except tk.TclError:
+                pass
 
     def close(self) -> None:
-        try:
-            self._marker.destroy()
-        except tk.TclError:
-            pass
+        for marker in self._markers:
+            try:
+                marker.destroy()
+            except tk.TclError:
+                pass
         if self.master._tour_win is self:
             self.master._tour_win = None
         self.destroy()

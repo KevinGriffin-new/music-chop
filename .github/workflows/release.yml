@@ -108,7 +108,12 @@ jobs:
             | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)"/\1/')"
           [ -n "$DEVELOPER_ID" ] || { echo "::error::no Developer ID Application identity after import"; exit 1; }
           echo "Signing as: $DEVELOPER_ID"
+          VERSION=""
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
           DEVELOPER_ID="$DEVELOPER_ID" NOTARY_PROFILE=dv2mv-notary \
+            DV2MV_VERSION="$VERSION" \
             bash packaging/build_macos.sh
 
       # Release smoke: launch the FROZEN app as the bootloader does it, run
