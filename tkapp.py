@@ -823,6 +823,233 @@ class NewProjectDialog(tk.Toplevel):
         self.on_ok(name, track, clips)
 
 
+class PreflightDialog(tk.Toplevel):
+    """Required + recommended system tooling (engine.preflight()), IRIX styled.
+
+    Re-run on re-open so installing a missing tool after launch is reflected.
+    The header color answers 'can dv2mv run here?' at a glance. A 'Copy install
+    command' button copies the canned one-liner for each missing tool onto the
+    clipboard (so a source-mode user just pastes it into a terminal); it stays
+    disabled when nothing is missing.
+    """
+    def __init__(self, master) -> None:
+        super().__init__(master)
+        self.title("Preflight — required + recommended tools")
+        apply_irix_theme(self)
+        self.configure(bg=IRIX["bg"])
+        body = ttk.Frame(self, padding=10)
+        body.pack(fill="both", expand=True)
+        self.summary = ttk.Label(body, text="checking…", font=IRIX_MENU_FONT)
+        self.summary.pack(anchor="w", pady=(0, 6))
+        self.grid = ttk.Frame(body)
+        self.grid.pack(fill="both", expand=True)
+        # build the bottom bar BEFORE the first render (render toggles copy_btn)
+        bar = ttk.Frame(self, padding=4)
+        bar.pack(fill="x")
+        self.copy_btn = ttk.Button(bar, text="Copy install command",
+                                   command=self._copy_install, state="disabled")
+        self.copy_btn.pack(side="right", padx=4)
+        ttk.Button(bar, text="Re-check", command=self._recheck).pack(side="right", padx=4)
+        ttk.Button(bar, text="Close", command=self.destroy).pack(side="right")
+        self._last = engine.preflight()
+        self._render(self._last)
+        self.transient(master)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.after(20, self.focus_force)
+
+    def _recheck(self) -> None:
+        for w in self.grid.winfo_children():
+            w.destroy()
+        self._last = engine.preflight()
+        self._render(self._last)
+
+    def _copy_install(self) -> None:
+        cmds = []
+        for t in self._last["tools"]:
+            if not t["found"] and t["install"]:
+                if t["install"] not in cmds:
+                    cmds.append(t["install"])
+        if not cmds:
+            return
+        text = "\n".join(cmds)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        messagebox.showinfo("dv2mv — preflight",
+                            f"Copied to clipboard:\n\n{text}", parent=self)
+
+    def _render(self, p: dict) -> None:
+        self._last = p
+        self.summary.config(text=p["summary"],
+                            foreground="#1a6a1a" if p["ok"] else "#a33")
+        # enable 'Copy install command' only when a missing tool has a canned cmd
+        any_cmd = any(not t["found"] and t["install"] for t in p["tools"])
+        self.copy_btn.config(state="normal" if any_cmd else "disabled")
+        for i, t in enumerate(p["tools"], start=1):
+            mark = "✓" if t["found"] else "✗"
+            color = "#1a6a1a" if t["found"] else "#a33"
+            row = ttk.Frame(self.grid, padding=(0, 2))
+            row.grid(row=i, column=0, sticky="we", columnspan=2)
+            tk.Label(row, text=mark, width=2, fg=color, bg=IRIX["bg"],
+                     font=IRIX_MENU_FONT).pack(side="left")
+            label = f"{t['name']}  ({t['kind']})"
+            if t.get("bundled"):
+                label += "  · bundled"        # frozen .app vendors these
+            ttk.Label(row, text=label).pack(side="left", padx=4)
+            ttk.Label(row, text=t["why"], foreground="#444").pack(side="left", padx=8)
+            if not t["found"] and t["install"]:
+                ttk.Label(row, text=t["install"],
+                          foreground="#666").pack(side="left", padx=8)
+
+
+class TourDialog(tk.Toplevel):
+    """The interactive 'What does this software do?' walkthrough.
+
+    Steps come from engine.TOUR_STEPS (the same data the web UI uses). Each
+    step's `target` names a key in App._tour_targets — the matching widget gets
+    a thick outline (Canvas overlay near it) so the eye lands on the right
+    control. The card holds title/body/cue + an optional demo line.
+    """
+    OVERLAY_COLOR = "#5b9dff"
+
+    def __init__(self, master) -> None:
+        super().__init__(master)
+        self.title("dv2mv tour")
+        apply_irix_theme(self)
+        self.configure(bg=IRIX["bg"])
+        self._steps = engine.TOUR_STEPS
+        self._i = 0
+        self._overlay = None    # the Canvas rectangle id marking the current target
+        # stacked above the root window for the highlight, but below the dialog
+        self._marker = tk.Canvas(master, height=0, width=0, highlightthickness=0,
+                                 bg=master.cget("bg"))
+        self._marker.place(x=0, y=0, relwidth=1, relheight=1)
+
+        body = ttk.Frame(self, padding=10)
+        body.pack(fill="both", expand=True)
+        self.title_lbl = ttk.Label(body, font=IRIX_MENU_FONT)
+        self.title_lbl.pack(anchor="w")
+        pg = ttk.Frame(body)
+        pg.pack(fill="x", pady=(2, 6))
+        ttk.Label(pg, text="step").pack(side="right")
+        self.page_lbl = ttk.Label(pg, text="")
+        self.page_lbl.pack(side="right", padx=4)
+        self.step_var = tk.IntVar(value=1)
+        tk.Spinbox(pg, from_=1, to=len(self._steps), width=4, textvariable=self.step_var,
+                   state="readonly", command=self._on_pick).pack(side="right")
+
+        self.body = tk.Text(body, wrap="word", width=52, height=10,
+                            bg=IRIX["light"], fg=IRIX["fg"], relief="sunken", bd=2,
+                            padx=8, pady=6, highlightthickness=0)
+        self.body.pack(fill="both", expand=True)
+
+        self.cue = ttk.Label(body, text="", foreground="#2a6a2a", font=IRIX_MENU_FONT)
+        self.cue.pack(anchor="w", pady=(6, 0))
+        self.demo = ttk.Label(body, text="", foreground="#444",
+                              wraplength=380, justify="left")
+        self.demo.pack(anchor="w", pady=(2, 0))
+
+        bar = ttk.Frame(self, padding=4)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Skip", command=self.close).pack(side="right", padx=4)
+        self.back_btn = ttk.Button(bar, text="Prev", command=self.prev)
+        self.back_btn.pack(side="right", padx=4)
+        self.next_btn = ttk.Button(bar, text="Next", command=self.next)
+        self.next_btn.pack(side="right", padx=4)
+
+        self.transient(master)
+        self.bind("<Escape>", lambda e: self.close())
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.after(20, self.focus_force)
+        # re-position whenever the highlight target or the window moves
+        self._move_handle = None
+        self.bind("<Configure>", lambda e: self._relayout())
+        self._render()
+
+    def _on_pick(self):
+        i = self.step_var.get() - 1
+        if 0 <= i < len(self._steps):
+            self._i = i
+            self._clamp_render()
+
+    def _render(self) -> None:
+        step = self._steps[self._i]
+        self.title_lbl.config(text=step["title"])
+        self.page_lbl.config(text=f"of {len(self._steps)}")
+        self.step_var.set(self._i + 1)
+        self.body.config(state="normal")
+        self.body.delete("1.0", "end")
+        self.body.insert("1.0", step["body"])
+        self.body.config(state="disabled")
+        self.cue.config(text=step["cue"])
+        if step["demo"]:
+            self.demo.config(text=("Try: " if not step["demo"].startswith("Try")
+                                   else "") + step["demo"])
+            self.demo.pack(anchor="w", pady=(2, 0))
+        else:
+            self.demo.pack_forget()
+        self.back_btn.config(state="normal" if self._i > 0 else "disabled")
+        self.next_btn.config(text="Done" if self._i == len(self._steps) - 1 else "Next")
+        self._relayout()
+
+    def _clamp_render(self):
+        if self._i < 0:
+            self._i = 0
+        elif self._i >= len(self._steps):
+            self._i = len(self._steps) - 1
+        self._render()
+
+    def next(self):
+        if self._i + 1 >= len(self._steps):
+            self.close()
+            return
+        self._i += 1
+        self._render()
+
+    def prev(self):
+        if self._i > 0:
+            self._i -= 1
+            self._render()
+
+    def _target_widget(self, name: str):
+        return self.master._tour_targets.get(name)
+
+    def _relayout(self) -> None:
+        """Draw a thick outline around the current target widget, sized to its
+        on-screen geometry. Re-run on each step + window move/configure."""
+        try:
+            if not self._marker.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        step = self._steps[self._i]
+        w = self._target_widget(step["target"])
+        self._marker.delete("all")
+        if w is None or step["target"] == "root":
+            return
+        try:
+            self.update_idletasks()
+            x = w.winfo_rootx() - self.master.winfo_rootx()
+            y = w.winfo_rooty() - self.master.winfo_rooty()
+            ww = w.winfo_width()
+            wh = w.winfo_height()
+        except tk.TclError:
+            return
+        if ww <= 1 or wh <= 1:
+            return
+        self._marker.create_rectangle(x - 4, y - 4, x + ww + 4, y + wh + 4,
+                                       outline=self.OVERLAY_COLOR, width=4,
+                                       tags="hl")
+
+    def close(self) -> None:
+        try:
+            self._marker.destroy()
+        except tk.TclError:
+            pass
+        if self.master._tour_win is self:
+            self.master._tour_win = None
+        self.destroy()
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -842,6 +1069,10 @@ class App(tk.Tk):
         self._last_tag = None      # grid-match tag of the last arrangement (Render/Export reuse)
         self.project = None        # active Project (None => whole-library mode)
         self._cancel = None        # cancel token for the in-flight stage (a threading.Event)
+        self._tour_targets = {}    # name -> widget, registered as controls are built
+        self._help_win = None
+        self._tour_win = None
+        self._preflight_win = None
 
         title_font = (IRIX_MENU_FONT[0], IRIX_MENU_FONT[1] + 2, "bold italic")
         stamp = _build_stamp()
@@ -852,13 +1083,17 @@ class App(tk.Tk):
         # ── media library (the root all media/outputs live under) ───────────
         lib = ttk.Frame(self, padding=4)
         lib.pack(fill="x", padx=6, pady=(6, 0))
+        self._tour_targets["media-library"] = lib
         self.lib_label = ttk.Label(lib, text="Library: …")
         self.lib_label.pack(side="left", padx=4)
         ttk.Button(lib, text="Help", command=self.open_help).pack(side="right",
-                                                                  padx=4)
+                                                                   padx=4)
+        ttk.Button(lib, text="Preflight…",
+                   command=self.open_preflight).pack(side="right", padx=4)
+        ttk.Button(lib, text="Tour…",
+                   command=self.open_tour).pack(side="right", padx=4)
         ttk.Button(lib, text="Media library…",
                    command=self.choose_media).pack(side="right", padx=4)
-        self._help_win = None
 
         proj = ttk.Frame(self, padding=4)
         proj.pack(fill="x", padx=6, pady=(6, 0))
@@ -878,18 +1113,27 @@ class App(tk.Tk):
         # ── add new media via native file dialogs ──────────────────────────
         src = ttk.Frame(self, padding=4)
         src.pack(fill="x", padx=6, pady=(0, 6))
+        self._tour_targets["add-media"] = src
         ttk.Label(src, text="Add:").pack(side="left", padx=4)
-        ttk.Button(src, text="Music track…",
-                   command=self.add_track).pack(side="left", padx=4)
-        ttk.Button(src, text="Video footage…",
-                   command=self.add_footage).pack(side="left", padx=4)
+        b_track = ttk.Button(src, text="Music track…",
+                   command=self.add_track)
+        b_track.pack(side="left", padx=4)
+        self._tour_targets["add-track"] = b_track
+        b_foot = ttk.Button(src, text="Video footage…",
+                   command=self.add_footage)
+        b_foot.pack(side="left", padx=4)
+        self._tour_targets["add-footage"] = b_foot
         ttk.Button(src, text="Tempo…", command=self.open_retempo).pack(side="left", padx=4)
-        ttk.Button(src, text="Gallery…", command=self.open_gallery).pack(side="right", padx=4)
+        b_gal = ttk.Button(src, text="Gallery…", command=self.open_gallery)
+        b_gal.pack(side="right", padx=4)
+        self._tour_targets["gallery"] = b_gal
         ttk.Button(src, text="Thumbnails…",
                    command=self.open_thumbnails).pack(side="right", padx=4)
 
         btns = ttk.Frame(self, padding=(6, 4))
         btns.pack(fill="x", padx=6)
+        self._tour_targets["arrange"] = btns
+        self._tour_targets["render-export"] = btns
         # labels disambiguate the two outputs: Render bakes a finished .mp4,
         # Export emits an editable timeline (OTIO/FCPXML) for an NLE.
         for label, stage in (("Analyze", "analyze"), ("Arrange", "arrange"),
@@ -1323,6 +1567,33 @@ class App(tk.Tk):
             self._help_win.lift()
             return
         self._help_win = HelpWindow(self)
+
+    def open_preflight(self) -> None:
+        """Required + recommended tooling check (singleton)."""
+        if self._preflight_win is not None and self._preflight_win.winfo_exists():
+            self._preflight_win.lift()
+            return
+        self._preflight_win = PreflightDialog(self)
+
+    def open_tour(self, step: int = 0) -> None:
+        """Interactive walkthrough ('What does this software do?').
+
+        Singleton: opening it again (a second click on Tour…) lifts the existing
+        window instead of stacking two markers.
+        """
+        if self._tour_win is not None and self._tour_win.winfo_exists():
+            self._tour_win.lift()
+            return
+        if self._tour_targets.get("media-library") is None:
+            # Tour needs the registered control anchors; if unavailable for any
+            # reason, fall back to the help window rather than a no-op click.
+            messagebox.showinfo("dv2mv — tour", "Tour anchors missing — opening Help instead.")
+            self.open_help()
+            return
+        self._tour_win = TourDialog(self)
+        if step:
+            self._tour_win._i = max(0, min(step, len(engine.TOUR_STEPS) - 1))
+            self._tour_win._render()
 
     def open_thumbnails(self) -> None:
         """Scout cover/YouTube thumbnail frames from the catalog; opens the

@@ -868,3 +868,94 @@ def test_tk_thumbnail_dialog_returns_options(app):
         if dlg.winfo_exists():
             dlg.destroy()
     assert hasattr(tkapp.App, "open_thumbnails")  # the button's target
+
+
+# ── preflight + interactive tour (required vs recommended tooling) ──────────
+def test_api_preflight_returns_tool_list(client):
+    r = client.get("/api/preflight")
+    assert r.status_code == 200
+    j = r.json()
+    assert {"ok", "tools", "summary", "clip_install"} <= set(j.keys())
+    names = {t["name"] for t in j["tools"]}
+    assert {"ffmpeg", "ffprobe", "rubberband"} <= names
+    assert all("install" in t for t in j["tools"])
+
+
+def test_api_tour_returns_steps_with_targets(client):
+    r = client.get("/api/tour")
+    assert r.status_code == 200
+    steps = r.json()["steps"]
+    assert len(steps) >= 7
+    for s in steps:
+        assert {"title", "target", "body", "cue"} <= set(s.keys())
+
+
+def test_index_has_tour_and_preflight_controls(client):
+    html = client.get("/").text
+    assert "startTour()" in html and "/api/tour" in html
+    assert "togglePreflight()" in html and "/api/preflight" in html
+    assert "data-tour=media-library" in html
+    assert "data-tour=add-track" in html and "data-tour=add-footage" in html
+    assert "data-tour=arrange" in html and "data-tour=render" in html
+    assert "data-tour=export" in html and "data-tour=gallery" in html
+    # "Copy install command" only renders when something is missing; its JS is
+    # always in the page so the missing-tool path can fire.
+    assert "Copy install command" in html and "copyInstall" in html
+
+
+def test_tkapp_has_preflight_and_tour_methods():
+    pytest.importorskip("tkinter")
+    import tkapp
+    for attr in ("open_preflight", "open_tour"):
+        assert hasattr(tkapp.App, attr), attr
+    for cls in ("PreflightDialog", "TourDialog"):
+        assert hasattr(tkapp, cls), cls
+
+
+def test_tk_preflight_dialog_lists_tools_and_has_copy_button(app):
+    import tkinter as tk, engine, tkapp
+    dlg = tkapp.PreflightDialog(app)
+    try:
+        app.update_idletasks()
+        assert dlg.summary.cget("text")                          # non-empty summary
+        # walk every Label in the grid; one per tool must carry its name
+        names = ""
+        for child in dlg.grid.winfo_children():
+            for lab in child.winfo_children():
+                try:
+                    names += " " + str(lab.cget("text"))
+                except tk.TclError:
+                    pass
+        assert "ffmpeg" in names and "ffprobe" in names and "rubberband" in names
+        # copy button exists; its enabled/disabled state mirrors the engine result
+        assert dlg.copy_btn is not None
+        p = engine.preflight()
+        missing = any(not t["found"] and t["install"] for t in p["tools"])
+        assert (dlg.copy_btn.cget("state") == "normal") == missing
+    finally:
+        dlg.destroy()
+
+
+def test_tk_tour_dialog_steps_through_engine_tour(app):
+    import engine, tkapp
+    dlg = tkapp.TourDialog(app)
+    try:
+        app.update_idletasks()
+        assert dlg._i == 0
+        assert dlg._steps is engine.TOUR_STEPS
+        # step 0 ("What dv2mv does") targets "root" -> no highlight rectangle
+        assert dlg._steps[0]["target"] == "root"
+        dlg.next()
+        assert dlg._i == 1
+        assert dlg._steps[1]["target"] == "media-library"
+        # all later targets must resolve to a registered widget (no step orphaned)
+        for step in dlg._steps:
+            assert step["target"] == "root" or \
+                   step["target"] in app._tour_targets, \
+                   f"tour target '{step['target']}' has no registered widget"
+        # back goes back, closing tears down the highlight canvas
+        dlg.prev(); assert dlg._i == 0
+        dlg.close()
+    finally:
+        if dlg.winfo_exists():
+            dlg.close()

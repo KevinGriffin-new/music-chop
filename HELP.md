@@ -5,6 +5,28 @@ You point it at a **media library** folder, feed it footage and music, and it
 cuts clips to the music's structure. The cut can be rendered straight to an
 mp4, or exported as an editable timeline for DaVinci Resolve.
 
+## What does this software do? (tour)
+
+Both UIs have a **Tour** button — a short interactive walkthrough that
+highlights each control in turn and points you at free, public-domain footage
+and music so you can run the whole loop end-to-end without any of your own
+media. The walk matches the steps below (Quick start).
+
+## Preflight — required vs recommended tools
+
+Both UIs show a **Preflight** check on launch (a status badge in the web tier,
+a Preflight… dialog in the Tk app). It reports the system tooling dv2mv shells
+out to:
+
+- **ffmpeg / ffprobe** — *required*. Decode/transcode footage, render the cut,
+  read clip metadata. Without them dv2mv cannot run; install via
+  `conda install ffmpeg` (macOS: `brew install ffmpeg`).
+- **rubberband** — *recommended* (only for Retempo). Best pitch-preserved
+  time-stretch; Retempo falls back to ffmpeg's `atempo` without it.
+
+The conda `environment.yml` in the repo bundles ffmpeg + rubberband in one
+command; the web `Dockerfile` zero-host-setup image already has them.
+
 ## Quick start
 
 - **Media library…** — pick the folder your media lives in (never the dv2mv

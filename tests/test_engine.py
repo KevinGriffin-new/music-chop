@@ -251,6 +251,117 @@ def test_require_ignores_non_path_values(tmp_path):
     engine._require("arrange", {"energy_match": 99, "note": None, "n": "sections"})
 
 
+# ── pure: preflight (required vs recommended tooling) ────────────────────────
+def test_preflight_returns_all_three_tools():
+    p = engine.preflight()
+    names = [t["name"] for t in p["tools"]]
+    assert names == ["ffmpeg", "ffprobe", "rubberband"]
+    kinds = {t["name"]: t["kind"] for t in p["tools"]}
+    assert kinds["ffmpeg"] == "required" and kinds["ffprobe"] == "required"
+    assert kinds["rubberband"] == "recommended"
+
+
+def test_preflight_ok_true_when_required_present(monkeypatch):
+    monkeypatch.setattr(engine.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(engine, "_bundle_bin", lambda: "")      # source mode
+    p = engine.preflight()
+    assert p["ok"] is True
+    assert p["required_missing"] == []
+    assert "required + recommended tools found" in p["summary"]
+    # every tool reports found + a path
+    assert all(t["found"] for t in p["tools"])
+    assert all(t["path"].startswith("/usr/bin/") for t in p["tools"])
+
+
+def test_preflight_blocks_when_required_missing(monkeypatch):
+    # ffmpeg/ffprobe missing (None), rubberband present
+    def which(n):
+        return "/usr/bin/rubberband" if n == "rubberband" else None
+    monkeypatch.setattr(engine.shutil, "which", which)
+    monkeypatch.setattr(engine, "_bundle_bin", lambda: "")
+    p = engine.preflight()
+    assert p["ok"] is False
+    assert p["required_missing"] == ["ffmpeg", "ffprobe"]
+    assert p["recommended_missing"] == []
+    assert "Blocking" in p["summary"]
+    # clip_install points at the first required missing tool
+    assert p["clip_install"]           # a non-empty canned command
+
+
+def test_preflight_recommended_missing_is_not_blocking(monkeypatch):
+    def which(n):
+        return None if n == "rubberband" else f"/usr/bin/{n}"
+    monkeypatch.setattr(engine.shutil, "which", which)
+    monkeypatch.setattr(engine, "_bundle_bin", lambda: "")
+    p = engine.preflight()
+    assert p["ok"] is True
+    assert p["required_missing"] == []
+    assert p["recommended_missing"] == ["rubberband"]
+    assert "OK to run" in p["summary"]
+
+
+def test_preflight_bundle_takes_precedence_over_path(monkeypatch, tmp_path):
+    # a frozen .app vendors binaries in <bundle>/bin — those must be reported
+    # even when PATH would otherwise miss them, and `bundled` must flag them.
+    bundle = tmp_path / "dv2mv.app" / "Resources" / "bin"
+    bundle.mkdir(parents=True)
+    (bundle / "ffmpeg").write_text("#!/bin/sh\necho hi\n")
+    (bundle / "ffprobe").write_text("#!/bin/sh\necho hi\n")
+    (bundle / "rubberband").write_text("#!/bin/sh\necho hi\n")
+    for f in ("ffmpeg", "ffprobe", "rubberband"):
+        os.chmod(bundle / f, 0o755)
+    monkeypatch.setattr(engine.shutil, "which", lambda n: None)   # nothing on PATH
+    monkeypatch.setattr(engine, "_bundle_bin", lambda: str(bundle))
+    p = engine.preflight()
+    assert p["ok"] is True
+    assert all(t["bundled"] for t in p["tools"]), "bundle binaries flagged as bundled"
+    assert all(t["path"].startswith(str(bundle)) for t in p["tools"])
+
+
+def test_preflight_bundle_does_not_shadow_path_in_source_mode(monkeypatch, tmp_path):
+    """In source mode there's no bundle; a binary on PATH must not be called
+    'bundled' (regression guard for str.startswith('') being always-True)."""
+    monkeypatch.setattr(engine.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(engine, "_bundle_bin", lambda: "")
+    p = engine.preflight()
+    assert all(not t["bundled"] for t in p["tools"])
+
+
+def test_install_command_picks_conda_brew_apt(monkeypatch):
+    # conda active → conda install -y <name>
+    monkeypatch.setattr(engine.os.path, "isdir", lambda p: p.endswith("conda-meta"))
+    monkeypatch.setattr(engine.sys, "platform", "darwin")
+    assert engine._install_command_for("ffmpeg") == "conda install -y ffmpeg"
+    # mac without conda → brew install
+    monkeypatch.setattr(engine.os.path, "isdir", lambda p: False)
+    assert engine._install_command_for("ffmpeg") == "brew install ffmpeg"
+    # linux → apt install (rubberband-cli, plain otherwise)
+    monkeypatch.setattr(engine.sys, "platform", "linux")
+    assert engine._install_command_for("ffmpeg") == "sudo apt install -y ffmpeg"
+    assert engine._install_command_for("rubberband") == "sudo apt install -y rubberband-cli"
+    # unknown platform → empty string (UI hides the button)
+    monkeypatch.setattr(engine.sys, "platform", "win32")
+    assert engine._install_command_for("ffmpeg") == ""
+
+
+def test_preflight_tour_steps_shared_with_both_uis():
+    """The TOUR_STEPS data is the single source for both UIs; lock its shape so
+    a refactor (adding a step, dropping a field) doesn't desync them."""
+    steps = engine.TOUR_STEPS
+    assert len(steps) >= 7, "must cover: what / set lib / add track / add footage / gallery / arrange / render-export"
+    keys = {"title", "target", "body", "cue", "demo", "demo_url"}
+    for s in steps:
+        assert keys <= set(s.keys()), s
+        assert s["target"], "every step needs a target to highlight"
+    # the targets named in steps are the keys the UIs register for highlighting
+    # (web uses [data-tour=<name>]; Tk uses App._tour_targets[<name>]). The set
+    # of targets must match what the UIs declare so no step points nowhere.
+    targets = {s["target"] for s in steps}
+    known = {"root", "media-library", "add-track", "add-footage",
+             "gallery", "arrange", "render-export", "add-media"}
+    assert targets <= known, f"tour targets not registered with UIs: {targets - known}"
+
+
 # ── pure: tracks_summary merge ───────────────────────────────────────────────
 def _write_summary(path, rows):
     fields = ["track", "duration_s", "tempo_bpm", "key", "n_beats",

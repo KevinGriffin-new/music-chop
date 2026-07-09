@@ -1226,6 +1226,178 @@ def export_project(project: Project, media: str, formats: tuple = ("otio", "fcpx
     yield from export(arr, out_dir=project.dir, formats=formats, cancel=cancel)
 
 
+# ── preflight: required vs recommended tooling ─────────────────────────────
+# Used by both front ends, so first-run guidance is the same in either UI. Pure
+# (calls shutil.which) and returns structured results — the UIs render it.
+PREFLIGHT_TOOLS = (
+    # (name, kind, why)
+    ("ffmpeg",     "required",    "decodes/transcodes video + renders the cut"),
+    ("ffprobe",   "required",    "reads clip metadata (fps, timecode)"),
+    ("rubberband", "recommended", "best-pitch Retempo; falls back to atempo"),
+)
+
+
+def _bundle_bin() -> str:
+    """The vendored-bin dir of a frozen macOS .app, or '' in source mode.
+
+    Matches packaging/entry._bundle_base(): PyInstaller sets sys._MEIPASS to the
+    extracted bundle root; ffmpeg/ffprobe/rubberband are vendored under its
+    `bin/`. In source mode there's no vendored bin, so we return '' and rely on
+    PATH (conda env / brew / apt / Docker image all put the binaries on PATH).
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return ""
+    d = os.path.join(base, "bin")
+    return d if os.path.isdir(d) else ""
+
+
+def _which_with_bundle(name: str) -> str:
+    """shutil.which, but also look in the bundled bin first (so a frozen .app
+    reports green even if PATH got mangled after launch)."""
+    bundle = _bundle_bin()
+    if bundle:
+        cand = os.path.join(bundle, name)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return shutil.which(name) or ""
+
+
+def _install_command_for(name: str) -> str:
+    """One-line platform-appropriate install for `name` (ffmpeg/ffprobe share;
+    rubberband is separate). Conda active → conda; else brew on mac, apt on
+    debian-like. The front ends put this on the clipboard."""
+    in_conda = os.path.isdir(os.path.join(sys.prefix, "conda-meta"))
+    if in_conda:
+        return f"conda install -y {name}"
+    if sys.platform == "darwin":
+        return f"brew install {name}"
+    if sys.platform.startswith("linux"):
+        return f"sudo apt install -y {name}-cli" if name == "rubberband" \
+            else f"sudo apt install -y {name}"
+    return ""      # unknown platform → no canned command
+
+
+def preflight() -> dict:
+    """Check the system for required + recommended tooling.
+
+    Returns a dict with `ok` (True iff every required tool is found), a per-tool
+    list of statuses (incl. a per-tool `install` one-liner for the clipboard),
+    and a human summary. The bundled .app on macOS vendors ffmpeg/ffprobe/
+    rubberband under its `bin/`, so a properly built .app reports green with no
+    Homebrew; this honors that (look there first, mirroring entry._bundle_base).
+
+    Never raises — a tool being missing is a result, not an exception. The UIs
+    surface this as a Preflight panel/dialog; tests assert on it.
+    """
+    tools = []
+    bundle = _bundle_bin()
+    for name, kind, why in PREFLIGHT_TOOLS:
+        path = _which_with_bundle(name)
+        in_bundle = bool(bundle) and bool(path) and path.startswith(bundle + os.sep)
+        tools.append({"name": name, "kind": kind, "why": why,
+                      "found": bool(path), "path": path,
+                      "bundled": in_bundle,
+                      "install": _install_command_for(name)})
+    req_missing = [t["name"] for t in tools
+                   if t["kind"] == "required" and not t["found"]]
+    rec_missing = [t["name"] for t in tools
+                   if t["kind"] == "recommended" and not t["found"]]
+    if req_missing:
+        summary = f"Blocking: install {', '.join(req_missing)} to run dv2mv."
+    elif rec_missing:
+        summary = f"OK to run. Optional: {', '.join(rec_missing)} for best Retempo."
+    else:
+        summary = "All required + recommended tools found."
+    return {"ok": not req_missing, "tools": tools,
+            "required_missing": req_missing, "recommended_missing": rec_missing,
+            "summary": summary,
+            "clip_install": _install_command_for(req_missing[0]) if req_missing else ""}
+
+
+# ── tour (a single shared source of truth for both UIs) ─────────────────────
+
+
+# ── tour (a single shared source of truth for both UIs) ─────────────────────
+# Each step points at a UI control by a stable CSS-ish selector (`target`) so the
+# web and Tk layers can each locate it without duplicating the prose. The body is
+# plain text (no markdown), so the Tk renderer needs no parser. `cue` is one-line
+# call-to-action; `demo` references publicly available footage/music so a user
+# with none of their own can still follow along. demo_url may be "" when N/A.
+TOUR_STEPS = (
+    {"title": "What dv2mv does",
+     "target": "root",
+     "body": ("dv2mv turns a pile of video footage into a music video synced to "
+              "a track. It scene-splits your footage, catalogs each clip's look "
+              "(motion, brightness, color), analyzes the track's tempo/structure, "
+              "then arranges clips to fit the music on a cut grid. Render bakes "
+              "an mp4; Export hands the cut to DaVinci Resolve for finishing."),
+     "cue": "Next: tell dv2mv where your media lives.",
+     "demo": "", "demo_url": ""},
+    {"title": "1 · Set your media library",
+     "target": "media-library",
+     "body": ("Pick the folder that holds your footage, audio, and outputs. "
+              "Everything dv2mv makes (clips/, catalog/, projects/, cuts/) lands "
+              "inside it. Never point this at the dv2mv code folder."),
+     "cue": "Type a path or browse, then 'Use this folder'.",
+     "demo": ("No media? For a tour you can create an empty folder anywhere "
+              "(e.g. ~/dv2mv-demo) and pick that. You'll add real footage next."),
+     "demo_url": ""},
+    {"title": "2 · Add a music track",
+     "target": "add-track",
+     "body": ("Add a song. dv2mv analyzes it in place: tempo (BPM), key, beats, "
+              "section boundaries, and an energy envelope. You can also time-"
+              "stretch it later with Tempo… (pitch-preserved)."),
+     "cue": "Pick an audio file and Analyze it.",
+     "demo": ("Free, in-PD music for trying this out: Kevin MacLeod's "
+              "'Rollin at 5' (CC0-ish / CC-BY-4.0) — see his site, ineptfilm."),
+     "demo_url": "https://incompetech.com/music/royalty-free/index.html"},
+    {"title": "3 · Add video footage",
+     "target": "add-footage",
+     "body": ("Add one or more source videos. dv2mv scene-splits each into clips "
+              "and feature-extracts them into a catalog you can browse in the "
+              "Gallery. Adding a tape later only processes the new clips."),
+     "cue": "Pick a video (or several), then wait for detect + catalog.",
+     "demo": ("PD footage that pairs nicely: 'Man with a Movie Camera' (Vertov, "
+              "1929) is on the Internet Archive, downloaded with the r- prefix "
+              "to mark it as a reference tape."),
+     "demo_url": "https://archive.org/details/Man_with_a_Movie_Camera_1929"},
+    {"title": "4 · Browse the catalog (Gallery)",
+     "target": "gallery",
+     "body": ("The Gallery shows every cataloged clip as a thumbnail sheet. "
+              "Click to select for a project, double-click to play. Selections "
+              "can be added/removed/replaced against an existing project."),
+     "cue": "Open the Gallery to see your clips.",
+     "demo": "After uploading the demo footage above, open the Gallery to browse it.",
+     "demo_url": ""},
+    {"title": "5 · Arrange",
+     "target": "arrange",
+     "body": ("Arranges the song on a grid — sections (calmest), downbeats "
+              "(driving, one cut per bar), beats (fast montage), or harmonic "
+              "(on chord changes). Match controls how clips are picked: energy "
+              "tracks loudness, contrast/variety also alternate brightness/color."),
+     "cue": "Choose a grid + match, then Arrange.",
+     "demo": "Compare grids arranges every grid-it's a fast way to pick a scheme.",
+     "demo_url": ""},
+    {"title": "6 · Render or Export",
+     "target": "render-export",
+     "body": ("Render to MP4 bakes a finished video with the music muxed in. "
+              "Export to editor writes an editable timeline (OTIO + FCPXML) for "
+              "DaVinci Resolve — dv2mv decides the cut; Resolve finishes it."),
+     "cue": "Click Render to bake, or Export to hand off to Resolve.",
+     "demo": "Export is where Resolve comes in — skip if you don't have it yet.",
+     "demo_url": "https://www.blackmagicdesign.com/products/davinciresolve"},
+    {"title": "You're set",
+     "target": "root",
+     "body": ("That's the whole loop: set library, add track + footage, browse, "
+              "arrange, render/export. Projects let you pin a track + footage "
+              "selection + options under a name if you cut more than one song. "
+              "Cancel is always available mid-stage."),
+     "cue": "Close this tour and try it on your footage.",
+     "demo": "", "demo_url": ""},
+)
+
+
 # ── smoke test ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # Minimal proof the core works: run the analyze stage on a track and print

@@ -364,6 +364,20 @@ def api_help():
         return fh.read()
 
 
+@app.get("/api/preflight")
+def api_preflight():
+    """Required + recommended system tooling (ffmpeg/ffprobe/rubberband). Both
+    UIs surface the same check so first-run guidance matches."""
+    return engine.preflight()
+
+
+@app.get("/api/tour")
+def api_tour():
+    """The shared tour steps (one source of truth — same data the Tk app uses).
+    Each step has a `target` selector the page knows how to highlight."""
+    return {"steps": list(engine.TOUR_STEPS)}
+
+
 @app.get("/api/media")
 def api_media():
     """Current media library + whether it's actually set (vs. the checkout)."""
@@ -564,16 +578,29 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
     border-radius:8px;display:block">
   <h1 style="position:absolute;left:14px;bottom:6px;margin:0;color:#fff;
     font:600 24px system-ui;text-shadow:0 1px 5px #000">dv2mv</h1>
-  <button onclick="toggleHelp()" title="help" style="position:absolute;right:10px;top:8px;
-    width:28px;height:28px;border-radius:50%;border:1px solid #fff8;background:#0006;
-    color:#fff;font:600 15px system-ui;cursor:pointer">?</button>
+  <div style="position:absolute;right:10px;top:8px;display:flex;gap:6px">
+    <button onclick="startTour()" title="interactive walkthrough"
+      style="width:28px;height:28px;border-radius:50%;border:1px solid #fff8;
+      background:#0006;color:#fff;font:600 13px system-ui;cursor:pointer">▶</button>
+    <button onclick="togglePreflight()" title="check required + recommended tools"
+      style="height:28px;border-radius:14px;border:1px solid #fff8;background:#0006;
+      color:#fff;font:600 12px system-ui;cursor:pointer;padding:0 8px">
+      <span id=preflightbadge style="border-radius:9px;padding:1px 6px;background:#888;min-width:46px;display:inline-block;text-align:center">…</span>
+      <span style="margin-left:4px">tools</span></button>
+    <button onclick="toggleHelp()" title="help" style="width:28px;height:28px;
+      border-radius:50%;border:1px solid #fff8;background:#0006;color:#fff;
+      font:600 15px system-ui;cursor:pointer">?</button>
+  </div>
 </div>
+
+<div id=preflight style="display:none;margin:.4rem 0;padding:.5rem .7rem;
+  background:#f6f6f0;border:1px solid #d4d4cc;border-radius:6px;font-size:13px"></div>
 
 <div id=helppanel style="display:none;position:fixed;inset:5% 10%;background:#fff;
   border:1px solid #999;border-radius:8px;box-shadow:0 8px 40px #0006;z-index:10;
   padding:1rem 1.6rem;overflow:auto;font-size:14px;line-height:1.45"></div>
 
-<fieldset style="margin-bottom:1rem">
+<fieldset style="margin-bottom:1rem" data-tour=media-library>
 <legend>Media library</legend>
 <div style="margin:.3rem 0;font-size:13px">
   current: <code id=medianow style="font-size:12px">…</code>
@@ -585,18 +612,18 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 </div>
 </fieldset>
 
-<fieldset style="margin-bottom:1rem">
+<fieldset style="margin-bottom:1rem" data-tour=add-media>
 <legend>Add media</legend>
-<div style="margin:.3rem 0">
+<div style="margin:.3rem 0" data-tour=add-track>
   <input type=file id=trackfile accept="audio/*">
   <button onclick="uploadTrack()">Upload music track</button>
 </div>
-<div style="margin:.3rem 0">
+<div style="margin:.3rem 0" data-tour=add-footage>
   <input type=file id=footagefiles accept="video/*" multiple>
   <button onclick="uploadFootage()">Upload + analyze footage</button>
 </div>
 <div style="margin:.3rem 0">
-  <a href="/api/gallery" target="_blank"><button type=button>View catalog gallery ↗</button></a>
+  <a href="/api/gallery" target="_blank" data-tour=gallery><button type=button>View catalog gallery ↗</button></a>
   <button type=button onclick="goThumbs()"
     title="pick sharp, well-lit, face-bearing frames from the catalog as cover/YouTube thumbnail candidates">Thumbnail suggestions</button>
   skip: <input id=thumbexcl value="__THUMBEXCL__" placeholder="tape regex"
@@ -622,10 +649,10 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
   placeholder="track filename (pick or type)">
 <datalist id=tracklist></datalist>
 <button onclick="go('analyze')">Analyze</button>
-<button onclick="go('arrange')">Arrange</button>
+<button onclick="go('arrange')" data-tour=arrange>Arrange</button>
 <button onclick="go('compare')" title="arrange every grid and rank them by energy match">Compare grids</button>
-<button onclick="go('render')">Render</button>
-<button onclick="go('export')" title="emit an editable timeline (OTIO + FCPXML) for DaVinci Resolve">Export ⤓</button>
+<button onclick="go('render')" data-tour=render>Render</button>
+<button onclick="go('export')" data-tour=export title="emit an editable timeline (OTIO + FCPXML) for DaVinci Resolve">Export ⤓</button>
 <button id=cancelbtn onclick="cancelJob()" disabled>Cancel</button>
 
 <fieldset style="margin:1rem 0">
@@ -702,8 +729,131 @@ function mdToHtml(md){
   return html;
 }
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') document.getElementById('helppanel').style.display = 'none';
+  if (e.key === 'Escape'){
+    document.getElementById('helppanel').style.display = 'none';
+    if (document.getElementById('tourcard')) endTour();
+  }
 });
+
+// ── preflight: required + recommended tooling ─────────────────────────────
+// Fetched once at load; Toggle re-renders. The PREFLIGHT_BADGE in the header is
+// green when ok, red when a required tool is missing.
+let _preflightCache = null;
+async function loadPreflight(){
+  if (_preflightCache) return _preflightCache;
+  try { _preflightCache = await (await fetch('/api/preflight')).json(); }
+  catch (e) { _preflightCache = {ok: false, tools: [], summary: 'preflight fetch failed'}; }
+  const badge = document.querySelector('#preflightbadge');
+  if (badge){
+    badge.textContent = _preflightCache.ok ? '✓ tools' : '⚠ tools';
+    badge.style.background = _preflightCache.ok ? '#3a7' : '#c44';
+  }
+  return _preflightCache;
+}
+async function togglePreflight(){
+  const box = document.getElementById('preflight');
+  if (box.style.display === 'block'){ box.style.display = 'none'; return; }
+  const p = await loadPreflight();
+  const row = t => `<tr><td>${t.found ? '✓' : '✗'}</td>
+    <td><b>${t.name}</b> <span style="color:#888">(${t.kind})</span>${t.bundled ? ' <span style="font-size:10px;color:#888">(bundled)</span>' : ''}</td>
+    <td style="color:#666">${t.why}</td>
+    <td style="font-size:11px;color:#888">${t.found ? 'found' : (t.install || 'see install docs')}</td></tr>`;
+  // clipboard button only when a tool is missing AND we have a canned command
+  const missing = p.tools.filter(t => !t.found && t.install);
+  const clipBtn = missing.length ?
+    `<button onclick="copyInstall()" title="copy the install command(s) for the missing tool(s)"
+       style="margin-left:.6rem;padding:2px 8px;font-size:12px;cursor:pointer">Copy install command</button>` : '';
+  box.innerHTML = `<div style="display:flex;align-items:baseline">${'System tooling'} — ${p.summary}${clipBtn}</div>
+    <table style="border-collapse:collapse;margin-top:.3rem;width:100% font-size:12px">
+    ${p.tools.map(row).join('')}</table>`;
+  box.style.display = 'block';
+}
+function copyInstall(){
+  const p = _preflightCache; if (!p) return;
+  const cmds = [...new Set(p.tools.filter(t => !t.found && t.install).map(t => t.install))];
+  if (!cmds.length) return;
+  const text = cmds.join('\n');
+  navigator.clipboard.writeText(text).then(
+    () => alert('Copied:\n' + text),
+    () => prompt('Copy this install command:', text));
+}
+
+// ── interactive tour ("What does this software do?") ───────────────────────
+// Steps come from /api/tour (shared with the Tk app). Each step targets a
+// `[data-tour=<name>]` element by `target`; a few targets are composite
+// ("render-export"), resolved here. The card highlights the element with an
+// outline, scrolls it into view, and shows title/body/cue/demo on a floating
+// card. Pure DOM — no library.
+let _tourSteps = null, _tourIdx = 0;
+function _tourTarget(sel){
+  if (sel === 'root') return document.body;
+  if (sel === 'render-export')
+    return document.querySelector('[data-tour=render]');
+  return document.querySelector(`[data-tour="${sel}"]`);
+}
+async function startTour(){
+  if (_tourSteps === null){
+    try { _tourSteps = (await (await fetch('/api/tour')).json()).steps; }
+    catch (e) { _tourSteps = []; }
+  }
+  if (!_tourSteps.length) return;
+  _tourIdx = 0;
+  _renderTour();
+}
+function _renderTour(){
+  // strip + re-add so a re-rendered element clears the highlight
+  document.querySelectorAll('.tour-hl').forEach(e => e.classList.remove('tour-hl'));
+  const step = _tourSteps[_tourIdx];
+  const el = _tourTarget(step.target);
+  if (el && el !== document.body){
+    el.classList.add('tour-hl');
+    el.scrollIntoView({behavior: 'smooth', block: 'center'});
+  }
+  const card = document.getElementById('tourcard') || (function(){
+    const c = document.createElement('div');
+    c.id = 'tourcard';
+    c.style.cssText = 'position:fixed;right:18px;bottom:18px;max-width:380px;'
+      + 'background:#fff;border:1px solid #999;border-radius:8px;'
+      + 'box-shadow:0 8px 40px #0005;padding:1rem 1.2rem;'
+      + 'font:14px system-ui;z-index:11';
+    document.body.appendChild(c);
+    return c;
+  })();
+  const last = _tourIdx === _tourSteps.length - 1;
+  card.innerHTML = `<div style="display:flex;justify-content:space-between;
+    align-items:baseline;margin-bottom:.4rem">
+      <b style="font-size:15px">${step.title}</b>
+      <span style="color:#888;font-size:12px">${_tourIdx + 1}/${_tourSteps.length}</span>
+    </div>
+    <div style="line-height:1.45">${step.body}</div>
+    ${step.demo ? `<div style="margin-top:.5rem;padding:.4rem .6rem;
+      background:#f6f6f0;border:1px solid #e0e0d8;border-radius:5px;
+      font-size:12px"><b>Try:</b> ${step.demo}${
+        step.demo_url ? ` · <a href="${step.demo_url}" target=_blank>link ↗</a>` : ''
+      }</div>` : ''}
+    <div style="margin-top:.6rem;color:#3a6;font-size:12px">${step.cue}</div>
+    <div style="margin-top:.6rem;display:flex;gap:6px;justify-content:flex-end">
+      <button onclick="endTour()" style="padding:4px 10px">Skip</button>
+      ${_tourIdx > 0 ? '<button onclick="_tourBack()" style="padding:4px 10px">Prev</button>' : ''}
+      <button onclick="_tourNext()" style="padding:4px 10px;font-weight:600">
+        ${last ? 'Done' : 'Next'}</button>
+    </div>`;
+}
+function _tourNext(){
+  if (_tourIdx + 1 >= _tourSteps.length){ endTour(); return; }
+  _tourIdx++; _renderTour();
+}
+function _tourBack(){ if (_tourIdx > 0){ _tourIdx--; _renderTour(); } }
+function endTour(){
+  document.querySelectorAll('.tour-hl').forEach(e => e.classList.remove('tour-hl'));
+  const c = document.getElementById('tourcard');
+  if (c) c.remove();
+  _tourIdx = 0;
+}
+const _TOUR_CSS = document.createElement('style');
+_TOUR_CSS.textContent = `.tour-hl{outline:3px solid #5b9dff !important;
+  outline-offset:3px;border-radius:6px;transition:outline .12s}`;
+document.head.appendChild(_TOUR_CSS);
 const bar = () => document.getElementById('bar');
 const busy = () => bar().removeAttribute('value');   // <progress> animates when value-less
 const determinate = f => bar().value = f;
@@ -923,6 +1073,7 @@ loadMedia();
 loadProjects();
 loadSources();
 loadTracks();
+loadPreflight();
 
 async function uploadTrack(){
   const f = document.getElementById('trackfile').files[0];

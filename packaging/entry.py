@@ -14,6 +14,10 @@ dispatch below runs the requested program instead of the GUI.
   (no flag)                → the Tkinter desktop GUI            (tkapp.main)
   --run-pipeline <name> …  → pipeline/<name>.py as __main__     (engine.SCRIPT)
   --run-scenedetect …      → the PySceneDetect CLI
+  --preflight-smoke        → print preflight JSON, exit 1 if a required tool
+                             is missing. Used by the release CI smoke after
+                             the .app is built, so bundle-precedence is verified
+                             on the actual runner output.
 
 It also prepends the bundle's `bin/` (vendored ffmpeg/ffprobe/rubberband) to
 PATH so every bare-name binary call in the engine — and the generated
@@ -76,6 +80,22 @@ def _run_scenedetect(argv_rest: list) -> None:
     scenedetect_main()
 
 
+def _preflight_smoke() -> None:
+    """Concrete fold of preflight() for the release smoke: prints preflight JSON,
+    exits 0 iff every *required* tool was found (recommended missing is OK — the
+    bundled app vendors rubberband when available, but the spec treats it as
+    optional, so a no-rubberband build is still release-grade). The bundled-bin
+    precedence is exercised end-to-end because this runs AS the frozen app, so
+    _prepare_environment() already prepended <bundle>/bin to PATH and
+    engine._bundle_bin() returns that path.
+    """
+    import json
+    import engine
+    p = engine.preflight()
+    print(json.dumps(p, indent=2))
+    sys.exit(0 if p["ok"] else 1)
+
+
 def main() -> None:
     multiprocessing.freeze_support()   # required for frozen apps that fork
     _prepare_environment()
@@ -85,6 +105,8 @@ def main() -> None:
         _run_pipeline(argv[1], argv[2:])
     elif argv and argv[0] == "--run-scenedetect":
         _run_scenedetect(argv[1:])
+    elif argv and argv[0] == "--preflight-smoke":
+        _preflight_smoke()
     else:
         import tkapp
         tkapp.main()

@@ -111,6 +111,40 @@ jobs:
           DEVELOPER_ID="$DEVELOPER_ID" NOTARY_PROFILE=dv2mv-notary \
             bash packaging/build_macos.sh
 
+      # Release smoke: launch the FROZEN app as the bootloader does it, run
+      # preflight() inside it, and assert every required tool resolves out of
+      # the bundled bin/. Guards the bundle-precedence fix end-to-end on the
+      # actual runner output — a misbuilt bundle (missing binary, wrong bin
+      # location, broken PATH prepend) stops the release here, never ships.
+      - name: Preflight smoke (bundled-binary precedence)
+        run: |
+          set -euo pipefail
+          APP="dist/dv2mv.app"
+          [[ -d "$APP" ]] || { echo "::error::no $APP to smoke"; exit 1; }
+          # Run the frozen binary directly with --preflight-smoke. PyInstaller's
+          # bootloader extracts to _MEIPASS, entry._prepare_environment() prepends
+          # <_MEIPASS>/bin to PATH, and engine.preflight() must report every
+          # required tool found with bundled=True. workflow_dispatch builds may be
+          # ad-hoc-signed (no secrets), so a quarantine env is harmless -- we
+          # don't gatekeep via Gatekeeper, just invoke the binary.
+          OUT="$("$APP/Contents/MacOS/dv2mv" --preflight-smoke 2>&1)" || {
+            echo "::error::preflight smoke failed — a required tool is missing from the bundle:"
+            echo "$OUT"
+            exit 1
+          }
+          echo "$OUT"
+          # belt + braces: assert each required tool is flagged bundled.
+          # (The entry.py --preflight-smoke path already exited nonzero if a
+          # required tool was missing; this cheaply proves bundled=True on top.)
+          "$HOME/dv2mv-tk9-venv/bin/python" - "$OUT" <<'PY'
+          import json, sys
+          p = json.loads(sys.argv[1])
+          for name in ("ffmpeg", "ffprobe"):
+              t = next((x for x in p["tools"] if x["name"] == name), None)
+              assert t and t["found"] and t["bundled"], f"{name} not bundled/found: {t}"
+              print(f"  ✓ {name} bundled → {t['path']}")
+          PY
+
       - name: Upload .dmg as a workflow artifact (always)
         uses: actions/upload-artifact@v4
         with:
