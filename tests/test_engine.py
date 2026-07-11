@@ -443,6 +443,50 @@ def test_detect_empty_source_raises(tmp_path):
         drain(engine.detect(str(tmp_path), str(tmp_path / "out")))   # empty dir
 
 
+def test_detect_streams_subprogress(tmp_path, monkeypatch):
+    """detect() turns scene_split's PROG/WARN lines into moving ProgressEvents
+    (the old CLI call was silent for a whole file — the 'is it stuck?' bug)."""
+    src = tmp_path / "gig.mp4"
+    src.write_bytes(b"x")
+    out = tmp_path / "clips"
+
+    def fake_stream(cmd, cwd, cancel=None):
+        assert "--mode" in cmd and "copy" in cmd     # mode reaches the script
+        yield "WARN dv video can't stream-copy into .mp4 — re-encoding instead"
+        yield "PROG 150/1000 scanning for scene changes — 50%"
+        yield "PROG 650/1000 re-encoding scene 1/2"
+        os.makedirs(out, exist_ok=True)
+        (out / "gig-Scene-001.mp4").write_bytes(b"x")
+        yield "PROG 1000/1000 split into 1 clip(s)"
+
+    monkeypatch.setattr(engine, "_stream", fake_stream)
+    evs = drain(engine.detect(str(src), str(out), mode="copy"))
+    msgs = [e.message for e in evs]
+    assert any("re-encoding scene 1/2" in m for m in msgs)      # sub-stage text
+    assert any("can't stream-copy" in m for m in msgs)          # WARN surfaced
+    fracs = [e.frac for e in evs if e.frac is not None]
+    assert fracs == sorted(fracs)                               # bar never goes backwards
+    assert any(0.0 < f < 1.0 for f in fracs)                    # ...and moves within the file
+
+
+def test_scene_split_snap_to_keyframes():
+    from pipeline import scene_split as ss
+    kf = [0.0, 8.0, 16.0, 24.0, 32.0]
+    # interior cuts snap to the nearest keyframe; first/last bounds stay put
+    assert ss.snap_to_keyframes([0.0, 9.0, 30.0, 35.5], kf) == [0.0, 8.0, 32.0, 35.5]
+    # two cuts landing on the same keyframe collapse into one (scenes merge)
+    assert ss.snap_to_keyframes([0.0, 7.9, 8.1, 35.5], kf) == [0.0, 8.0, 35.5]
+    # single scene or no keyframe index: unchanged
+    assert ss.snap_to_keyframes([0.0, 35.5], kf) == [0.0, 35.5]
+    assert ss.snap_to_keyframes([0.0, 9.0, 35.5], []) == [0.0, 9.0, 35.5]
+
+
+def test_scene_split_parse_seconds():
+    from pipeline import scene_split as ss
+    assert ss.parse_seconds("0.6s") == 0.6
+    assert ss.parse_seconds("2") == 2.0
+
+
 # ── integration: ingest ──────────────────────────────────────────────────────
 @requires_ffmpeg
 def test_ingest_normalizes_and_is_idempotent(clips_dir, tmp_path):
@@ -482,6 +526,18 @@ def test_detect_accepts_picked_file_list(clips_dir, tmp_path):
                    if f.endswith(".mp4"))[0]
     evs = drain(engine.detect([first], out))
     assert evs[-1].done and evs[-1].result["clips"] >= 1
+
+
+@requires_scenedetect
+def test_detect_copy_mode(clips_dir, tmp_path):
+    """mode='copy' stream-copies scene clips (h264 source → no re-encode)."""
+    out = str(tmp_path / "scenes")
+    first = sorted(os.path.join(clips_dir, f) for f in os.listdir(clips_dir)
+                   if f.endswith(".mp4"))[0]
+    evs = drain(engine.detect([first], out, mode="copy"))
+    assert evs[-1].done and evs[-1].result["clips"] >= 1
+    # sub-progress from the scan/split phases actually surfaced
+    assert any("scene" in e.message for e in evs if not e.done)
 
 
 # ── integration: catalog ─────────────────────────────────────────────────────

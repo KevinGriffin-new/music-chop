@@ -186,11 +186,16 @@ def upload_footage(files: List[UploadFile] = File(...)):
 
 
 @app.get("/api/footage")
-def api_footage():
-    """Scene-split everything in sources/, then (re)build the clip catalog."""
+def api_footage(mode: str = "encode"):
+    """Scene-split everything in sources/, then (re)build the clip catalog.
+
+    mode=copy stream-copies scene clips (lossless + fast, keyframe-snapped
+    cuts) instead of the default frame-exact re-encode.
+    """
     job_id, cancel = _new_job()
+    mode_ = mode if mode in ("encode", "copy") else "encode"
     def chain():
-        yield from engine.detect(SOURCES, CLIPS, cancel=cancel)
+        yield from engine.detect(SOURCES, CLIPS, mode=mode_, cancel=cancel)
         # incremental: only catalog the newly-split clips, append to the manifest
         yield from engine.catalog(CLIPS, CATALOG, append=True, cancel=cancel)
     return _sse(chain(), cancel=cancel, job_id=job_id)
@@ -621,6 +626,8 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
 <div style="margin:.3rem 0" data-tour=add-footage>
   <input type=file id=footagefiles accept="video/*" multiple>
   <button onclick="uploadFootage()">Upload + analyze footage</button>
+  <label title="split scenes by stream copy: lossless and much faster, but cuts land on keyframes (a few seconds of slack) — good for long-scene material like live sets or screen recordings">
+    <input type=checkbox id=fastsplit> fast split (no re-encode)</label>
 </div>
 <div style="margin:.3rem 0">
   <a href="/api/gallery" target="_blank" data-tour=gallery><button type=button>View catalog gallery ↗</button></a>
@@ -1098,7 +1105,8 @@ async function uploadFootage(){
   if (!r.ok){ log('upload failed: ' + (await r.text())); return; }
   const j = await r.json();
   log('uploaded: ' + j.files.join(', ') + ' — detecting + cataloging …');
-  stream('/api/footage', 'footage', null);
+  const mode = document.getElementById('fastsplit').checked ? 'copy' : 'encode';
+  stream('/api/footage?mode=' + mode, 'footage', null);
 }
 </script>
 """

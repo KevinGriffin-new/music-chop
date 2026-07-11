@@ -126,6 +126,7 @@ SCRIPT = {
     "sync":     os.path.join(PIPELINE, "sync_clips.py"),
     "export":   os.path.join(PIPELINE, "export_timeline.py"),
     "thumbs":   os.path.join(PIPELINE, "thumbnail_scout.py"),
+    "scenes":   os.path.join(PIPELINE, "scene_split.py"),
 }
 
 # ── frozen-app dispatch ─────────────────────────────────────────────────────
@@ -133,10 +134,9 @@ SCRIPT = {
 # the app bootloader, NOT a Python interpreter — so the source-mode pattern of
 # re-invoking `[sys.executable, some_script.py]` would relaunch the GUI instead
 # of running a stage. The packaging/entry.py dispatcher recognizes the
-# --run-pipeline / --run-scenedetect flags below and runs the right code in a
-# fresh process (preserving the subprocess isolation that cancellation relies
-# on). These helpers emit the correct argv for both frozen and source runs;
-# everything is a no-op when running from source.
+# --run-pipeline flag below and runs the right code in a fresh process
+# (preserving the subprocess isolation that cancellation relies on). This
+# helper emits the correct argv for both frozen and source runs.
 _FROZEN = getattr(sys, "frozen", False)
 
 
@@ -146,15 +146,6 @@ def _pipeline_cmd(name: str, *args: str) -> list:
     if _FROZEN:
         return [sys.executable, "--run-pipeline", name, *args]
     return [sys.executable, SCRIPT[name], *args]
-
-
-def _scenedetect_cmd(*args: str) -> list:
-    """argv for the PySceneDetect CLI. Frozen: through the dispatcher, since
-    `scenedetect` is a Python console-script (not a bundled native binary);
-    source: the bare command resolved on PATH."""
-    if _FROZEN:
-        return [sys.executable, "--run-scenedetect", *args]
-    return ["scenedetect", *args]
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv", ".mpg", ".mpeg")
 
@@ -486,14 +477,20 @@ def detect(
     min_scene_len: str = "0.6s",
     rate_factor: int = 18,
     preset: str = "slow",
+    mode: str = "encode",                  # "encode" (frame-exact) | "copy" (fast)
     cancel: CancelToken = None,
 ) -> Iterator[ProgressEvent]:
     """Split source video into scene clips in out_dir.
 
     `src` may be a directory of sources, a single video file, or a list of
-    files (e.g. picked in a file dialog or uploaded). Mirrors fates-end-chop.sh
-    but per-source, so we can emit real progress. Skips sources already split
-    (idempotent re-runs).
+    files (e.g. picked in a file dialog or uploaded). Skips sources already
+    split (idempotent re-runs). Each source runs scene_split.py, which streams
+    sub-progress ("scanning — 42%", "re-encoding scene 3/17") as PROG lines,
+    so the bar moves within a file instead of sitting on one message.
+
+    mode="copy" stream-copies scenes instead of re-encoding: lossless and
+    ~disk-speed, but cuts snap to keyframes (good for long-scene material
+    like live sets; scene_split falls back to encode for non-mp4-safe codecs).
     """
     st = "detect"
     os.makedirs(out_dir, exist_ok=True)
@@ -516,14 +513,20 @@ def detect(
         _check_cancel(cancel, st)
         base = os.path.basename(f)
         yield ProgressEvent(st, f"detecting scenes — {base}", i / total)
-        cmd = _scenedetect_cmd(
-            "-i", f, "-o", out_dir,
-            "detect-content", "--threshold", str(threshold),
-            "--min-scene-len", min_scene_len,
-            "split-video", "--rate-factor", str(rate_factor), "--preset", preset,
+        cmd = _pipeline_cmd(
+            "scenes", "-i", f, "-o", out_dir,
+            "--threshold", str(threshold), "--min-scene-len", min_scene_len,
+            "--rate-factor", str(rate_factor), "--preset", preset,
+            "--mode", mode,
         )
-        for _ in _stream(cmd, cwd=MEDIA, cancel=cancel):
-            pass  # scenedetect is noisy; we report per-file granularity
+        for line in _stream(cmd, cwd=MEDIA, cancel=cancel):
+            m = _PROG.search(line)
+            if m:
+                p_i, p_n = int(m.group(1)), int(m.group(2))
+                yield ProgressEvent(st, f"{base}: {m.group(3).strip()}",
+                                    (i + p_i / p_n) / total)
+            elif line.startswith("WARN "):
+                yield ProgressEvent(st, f"{base}: {line[5:]}", None)
     n = len(glob(os.path.join(out_dir, "*-Scene-*.mp4")))
     if n == 0:
         raise StageError(

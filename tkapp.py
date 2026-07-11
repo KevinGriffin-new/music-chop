@@ -1205,6 +1205,11 @@ class App(tk.Tk):
                    command=self.add_footage)
         b_foot.pack(side="left", padx=4)
         self._tour_targets["add-footage"] = b_foot
+        # stream-copy scene split: lossless + fast, cuts snap to keyframes —
+        # the right choice for long-scene material (live sets, screen recs)
+        self.v_fastsplit = tk.BooleanVar(value=False)
+        ttk.Checkbutton(src, text="fast split (no re-encode)",
+                        variable=self.v_fastsplit).pack(side="left")
         ttk.Button(src, text="Tempo…", command=self.open_retempo).pack(side="left", padx=4)
         b_gal = ttk.Button(src, text="Gallery…", command=self.open_gallery)
         b_gal.pack(side="right", padx=4)
@@ -1637,8 +1642,10 @@ class App(tk.Tk):
         sources = list(paths)
         self.status.config(text=f"ingesting {len(sources)} clip(s) …")
 
+        mode = "copy" if self.v_fastsplit.get() else "encode"
+
         def chain(c):
-            yield from engine.detect(sources, clips, cancel=c)
+            yield from engine.detect(sources, clips, mode=mode, cancel=c)
             # incremental: only catalog the newly-split clips, append to manifest
             yield from engine.catalog(clips, cat, append=True, cancel=c)
         self._spawn(chain)

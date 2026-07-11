@@ -38,7 +38,6 @@ import engine  # noqa: E402
 REPO = DV2MV_DIR
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None
-HAVE_SCENEDETECT = shutil.which("scenedetect") is not None
 
 
 def _have_lib(name):
@@ -49,13 +48,16 @@ def _have_lib(name):
         return False
 
 
+# scene_split.py uses the PySceneDetect Python API (no CLI on PATH needed)
+HAVE_SCENEDETECT = _have_lib("scenedetect")
 HAVE_LIBROSA = _have_lib("librosa")
 HAVE_CV2 = _have_lib("cv2")
 HAVE_OTIO = _have_lib("opentimelineio")
 
 requires_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg not on PATH")
 requires_scenedetect = pytest.mark.skipif(
-    not (HAVE_SCENEDETECT and HAVE_FFMPEG), reason="scenedetect/ffmpeg not on PATH")
+    not (HAVE_SCENEDETECT and HAVE_FFMPEG),
+    reason="scenedetect not importable / ffmpeg not on PATH")
 requires_librosa = pytest.mark.skipif(not HAVE_LIBROSA, reason="librosa not importable")
 requires_cv2 = pytest.mark.skipif(not HAVE_CV2, reason="opencv not importable")
 requires_otio = pytest.mark.skipif(not HAVE_OTIO, reason="opentimelineio not importable")

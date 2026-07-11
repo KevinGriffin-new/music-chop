@@ -5,15 +5,15 @@
 entry.py — single entry point for the packaged macOS .app (PyInstaller).
 
 A frozen single-file app has ONE executable, but dv2mv's engine drives several
-distinct programs as subprocesses (the GUI, the four pipeline scripts, and the
-PySceneDetect CLI). In source mode each is `python <thing>`; in a bundle there
-is no separate `python`, so `sys.executable` IS this app. This module makes the
-app re-entrant: the engine spawns the app again with a `--run-*` flag, and the
-dispatch below runs the requested program instead of the GUI.
+distinct programs as subprocesses (the GUI and the pipeline scripts — incl.
+scene_split.py, which wraps PySceneDetect's Python API). In source mode each is
+`python <thing>`; in a bundle there is no separate `python`, so `sys.executable`
+IS this app. This module makes the app re-entrant: the engine spawns the app
+again with a `--run-*` flag, and the dispatch below runs the requested program
+instead of the GUI.
 
   (no flag)                → the Tkinter desktop GUI            (tkapp.main)
   --run-pipeline <name> …  → pipeline/<name>.py as __main__     (engine.SCRIPT)
-  --run-scenedetect …      → the PySceneDetect CLI
   --preflight-smoke        → print preflight JSON, exit 1 if a required tool
                              is missing. Used by the release CI smoke after
                              the .app is built, so bundle-precedence is verified
@@ -73,13 +73,6 @@ def _run_pipeline(name: str, argv_rest: list) -> None:
     runpy.run_path(script, run_name="__main__")
 
 
-def _run_scenedetect(argv_rest: list) -> None:
-    """Run the PySceneDetect CLI in-process (replaces the bare `scenedetect`)."""
-    from scenedetect.__main__ import main as scenedetect_main
-    sys.argv = ["scenedetect", *argv_rest]
-    scenedetect_main()
-
-
 def _preflight_smoke() -> None:
     """Concrete fold of preflight() for the release smoke: prints preflight JSON,
     exits 0 iff every *required* tool was found (recommended missing is OK — the
@@ -103,8 +96,6 @@ def main() -> None:
     argv = sys.argv[1:]
     if argv and argv[0] == "--run-pipeline":
         _run_pipeline(argv[1], argv[2:])
-    elif argv and argv[0] == "--run-scenedetect":
-        _run_scenedetect(argv[1:])
     elif argv and argv[0] == "--preflight-smoke":
         _preflight_smoke()
     else:
