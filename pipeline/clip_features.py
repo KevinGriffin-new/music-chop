@@ -40,20 +40,35 @@ import numpy as np
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".avi", ".dv", ".mpg", ".mpeg")
 
-# matches 2004.07.18_05-29-17 anywhere in the name
+# matches 2004.07.18_05-29-17 anywhere in the name (the DV capture convention)
 TS_RE = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})_(\d{2})-(\d{2})-(\d{2})")
+# matches 2025-09-26 18-26-38 (OBS's default recording name)
+OBS_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})[ _](\d{2})-(\d{2})-(\d{2})")
+# the scene suffix detect() appends to a source's clips
+SCENE_RE = re.compile(r"-Scene-\d+$")
 
 
 def parse_name(path):
-    """Return (source_prefix, capture_time_iso) parsed from the filename."""
+    """Return (source, capture_time_iso) parsed from the filename.
+
+    DV convention (prefix2004.07.18_05-29-17): source = the prefix (the tape).
+    OBS convention (CAM 2025-09-26 18-26-38): no tape prefix to lean on, so
+    source = the whole source-file stem (scene suffix stripped) — clips group
+    per recording, e.g. per camera-take of a multicam live shoot.
+    """
     base = os.path.basename(path)
     m = TS_RE.search(base)
-    if not m:
-        return os.path.splitext(base)[0], ""
-    y, mo, d, h, mi, s = m.groups()
-    iso = f"{y}-{mo}-{d}T{h}:{mi}:{s}"
-    prefix = base[: m.start()].rstrip("-_ .") or "unknown"
-    return prefix, iso
+    if m:
+        y, mo, d, h, mi, s = m.groups()
+        iso = f"{y}-{mo}-{d}T{h}:{mi}:{s}"
+        prefix = base[: m.start()].rstrip("-_ .") or "unknown"
+        return prefix, iso
+    stem = SCENE_RE.sub("", os.path.splitext(base)[0])
+    m = OBS_RE.search(base)
+    if m:
+        y, mo, d, h, mi, s = m.groups()
+        return stem, f"{y}-{mo}-{d}T{h}:{mi}:{s}"
+    return stem, ""
 
 
 def sample_indices(total, n):

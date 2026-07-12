@@ -487,6 +487,22 @@ def test_scene_split_parse_seconds():
     assert ss.parse_seconds("2") == 2.0
 
 
+@requires_cv2
+def test_clip_features_parse_name_conventions():
+    from pipeline.clip_features import parse_name
+    # DV convention: source = the tape prefix
+    assert parse_name("fatescam2004.05.07_20-00-01-Scene-003.mp4") == \
+        ("fatescam", "2004-05-07T20:00:01")
+    # OBS convention (multicam live shoot): source = the recording stem,
+    # scene suffix stripped, capture time parsed from the OBS timestamp
+    assert parse_name("FB 2025-09-26 18-26-39-Scene-001.mp4") == \
+        ("FB 2025-09-26 18-26-39", "2025-09-26T18:26:39")
+    assert parse_name("2025-09-26 17-15-22-Scene-002.mp4") == \
+        ("2025-09-26 17-15-22", "2025-09-26T17:15:22")
+    # no recognizable timestamp: whole stem, no capture time
+    assert parse_name("random-clip.mp4") == ("random-clip", "")
+
+
 # ── integration: ingest ──────────────────────────────────────────────────────
 @requires_ffmpeg
 def test_ingest_normalizes_and_is_idempotent(clips_dir, tmp_path):
