@@ -188,8 +188,8 @@ def gallery_clip_path(row: dict) -> str:
 
 
 def _build_stamp() -> str:
-    """Short commit id + date for the banner, so a tester knows which build this
-    is. Empty string if it isn't a git checkout (e.g. a packaged copy)."""
+    """Short commit id + date, so a tester knows which build this is.
+    Empty string if it isn't a git checkout (e.g. a packaged copy)."""
     d = engine.HERE
     try:
         sha = subprocess.run(["git", "-C", d, "rev-parse", "--short", "HEAD"],
@@ -200,6 +200,27 @@ def _build_stamp() -> str:
         return f"{sha} · {date}" if sha else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def _release_info() -> str:
+    """One line identifying this build, for the Help footer: the git stamp in
+    a source checkout; in the packaged .app (no git) the version from the
+    bundle's own Info.plist. Empty string only if neither is available."""
+    stamp = _build_stamp()
+    if stamp:
+        return stamp
+    if getattr(sys, "frozen", False) and platform.system() == "Darwin":
+        # sys.executable = …/dv2mv.app/Contents/MacOS/dv2mv
+        plist = os.path.join(os.path.dirname(os.path.dirname(sys.executable)),
+                             "Info.plist")
+        try:
+            import plistlib
+            with open(plist, "rb") as fh:
+                v = plistlib.load(fh).get("CFBundleShortVersionString", "")
+            return f"v{v}" if v else ""
+        except OSError:
+            return ""
+    return ""
 
 
 def format_arrange_summary(meta: dict) -> str:
@@ -320,9 +341,13 @@ def parse_help(md: str):
 
 
 class HelpWindow(tk.Toplevel):
-    """HELP.md in a scrollable read-only text dialog, IRIX-flavored."""
+    """HELP.md in a scrollable read-only text dialog, IRIX-flavored.
 
-    def __init__(self, master) -> None:
+    `jump` scrolls to the first `## ` heading containing that text — buttons
+    can deep-link a topic (e.g. Latham → the OBS live-shoot walkthrough).
+    """
+
+    def __init__(self, master, jump: str = "") -> None:
         super().__init__(master)
         self.title("dv2mv Help")
         self.configure(bg=IRIX["bg"])
@@ -345,6 +370,7 @@ class HelpWindow(tk.Toplevel):
         text.pack(side="left", fill="both", expand=True)
 
         self.text = text                      # introspectable (tests)
+        self.anchors = {}                     # h2 heading text -> text index
         base = tkfont.nametofont("TkDefaultFont")
         fam, size = base.actual("family"), base.actual("size")
         text.tag_configure("h1", font=(fam, size + 5, "bold italic"),
@@ -355,14 +381,29 @@ class HelpWindow(tk.Toplevel):
         text.tag_configure("code", background=IRIX["field"],
                            font=pick_irix_font(set(tkfont.families(self))))
         for tag, chunk in parse_help(md):
+            if tag == "h2":
+                self.anchors[chunk.strip()] = text.index("end-1c")
             text.insert("end", chunk, tag)
         text.configure(state="disabled")
 
         bar = ttk.Frame(self, padding=4)
         bar.pack(fill="x")
+        info = _release_info()
+        self.info_label = ttk.Label(bar, text=f"dv2mv {info}" if info else "",
+                                    foreground=IRIX.get("dim", "#666"))
+        self.info_label.pack(side="left", padx=4)
         ttk.Button(bar, text="Close", command=self.destroy).pack(side="right",
                                                                  padx=4)
         self.bind("<Escape>", lambda e: self.destroy())
+        if jump:
+            self.jump(jump)
+
+    def jump(self, heading: str) -> None:
+        """Scroll so the first `## ` heading containing `heading` is at top."""
+        for h, idx in self.anchors.items():
+            if heading.lower() in h.lower():
+                self.text.yview(idx)
+                return
 
 
 class GalleryWindow(tk.Toplevel):
@@ -1157,9 +1198,9 @@ class App(tk.Tk):
         self._preflight_win = None
 
         title_font = (IRIX_MENU_FONT[0], IRIX_MENU_FONT[1] + 2, "bold italic")
-        stamp = _build_stamp()
-        banner = "dv2mv — offline" + (f"   ·   {stamp}" if stamp else "")
-        ttk.Label(self, text=banner, anchor="center", relief="raised",
+        # build id/date moved to the Help footer (_release_info) — the banner
+        # stays clean, and packaged builds (no git) get a real line there too
+        ttk.Label(self, text="dv2mv — offline", anchor="center", relief="raised",
                   borderwidth=2, padding=4, font=title_font).pack(fill="x")
 
         # ── media library (the root all media/outputs live under) ───────────
@@ -1174,6 +1215,10 @@ class App(tk.Tk):
                    command=self.open_preflight).pack(side="right", padx=4)
         ttk.Button(lib, text="Tour…",
                    command=self.open_tour).pack(side="right", padx=4)
+        # cryptic on purpose — see the "Live shoots from OBS (Latham)" section
+        ttk.Button(lib, text="Latham…",
+                   command=lambda: self.open_help(jump="Latham")
+                   ).pack(side="right", padx=4)
         ttk.Button(lib, text="Media library…",
                    command=self.choose_media).pack(side="right", padx=4)
 
@@ -1674,12 +1719,15 @@ class App(tk.Tk):
             yield from engine.catalog(clips, cat, append=True, cancel=c)
         self._spawn(chain)
 
-    def open_help(self) -> None:
-        """Show HELP.md (singleton window — a second click raises it)."""
+    def open_help(self, jump: str = "") -> None:
+        """Show HELP.md (singleton window — a second click raises it).
+        `jump` scrolls to the matching `## ` section, raised or fresh."""
         if self._help_win is not None and self._help_win.winfo_exists():
             self._help_win.lift()
+            if jump:
+                self._help_win.jump(jump)
             return
-        self._help_win = HelpWindow(self)
+        self._help_win = HelpWindow(self, jump=jump)
 
     def open_preflight(self) -> None:
         """Required + recommended tooling check (singleton)."""

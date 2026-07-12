@@ -594,6 +594,9 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
     <button onclick="startTour()" title="interactive walkthrough"
       style="width:28px;height:28px;border-radius:50%;border:1px solid #fff8;
       background:#0006;color:#fff;font:600 13px system-ui;cursor:pointer">▶</button>
+    <button onclick="helpSection('Latham')" title="live shoots from OBS"
+      style="height:28px;border-radius:14px;border:1px solid #fff8;background:#0006;
+      color:#fff;font:600 12px system-ui;cursor:pointer;padding:0 8px">Latham</button>
     <button onclick="togglePreflight()" title="check required + recommended tools"
       style="height:28px;border-radius:14px;border:1px solid #fff8;background:#0006;
       color:#fff;font:600 12px system-ui;cursor:pointer;padding:0 8px">
@@ -716,6 +719,17 @@ async function toggleHelp(){
     p.dataset.loaded = '1';
   }
   p.style.display = 'block';
+}
+async function helpSection(match){    // open help scrolled to a ## section
+  const p = document.getElementById('helppanel');
+  if (p.style.display !== 'block') await toggleHelp();
+  for (const h of p.querySelectorAll('h3'))
+    if (h.textContent.toLowerCase().includes(match.toLowerCase())){
+      // the panel is its own fixed scroll container — scroll it directly
+      p.scrollTop += h.getBoundingClientRect().top
+                     - p.getBoundingClientRect().top - 8;
+      return;
+    }
 }
 function mdToHtml(md){
   const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;');

@@ -812,9 +812,32 @@ def test_tk_help_window_renders_and_is_singleton(app):
         assert w.text.cget("state") == "disabled"     # read-only
         app.open_help()                               # raises, doesn't stack
         assert app._help_win is w
+        # build id lives in the help footer now (banner stays clean)
+        assert w.info_label.cget("text").startswith("dv2mv ")
     finally:
         if w.winfo_exists():
             w.destroy()
+
+
+def test_tk_help_window_jumps_to_section(app):
+    """The Latham… button deep-links the OBS live-shoot section."""
+    app.open_help(jump="Latham")
+    w = app._help_win
+    try:
+        w.update_idletasks()
+        assert any("Latham" in h for h in w.anchors)
+        assert "OBS" in w.text.get("1.0", "end")
+        assert w.text.yview()[0] > 0            # actually scrolled off the top
+    finally:
+        if w.winfo_exists():
+            w.destroy()
+
+
+def test_release_info_in_checkout():
+    """In a git checkout the help footer identifies the build by commit."""
+    from tkapp import _release_info
+    info = _release_info()
+    assert info and "·" in info                  # "<sha> · <date>"
 
 
 def test_help_md_covers_every_stage_button():

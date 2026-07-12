@@ -108,6 +108,32 @@ in the project's own folder. Use the **Gallery** to scope footage: select
 clips, then add/remove/replace the project's selection. Double-click any
 gallery thumbnail to play the clip.
 
+## Live shoots from OBS (Latham)
+
+Named for the OBS operator whose multicam shoot provoked the feature.
+
+OBS names each recording with its start time (`2025-09-26 18-26-38.mov`),
+and when several machines record the same show those names are enough to
+pair every camera with its take — no timecode needed. Only one machine
+needs real audio (the one wired to the board); the other cameras' silent
+tracks don't matter, because renders are always scored by the project's
+track. The workflow:
+
+- Copy every machine's recordings into the media library folder, then
+  **Add: Video footage…** with **fast split** checked — a locked-off live
+  camera has almost no scene changes, so a lossless stream copy beats
+  re-encoding by hours.
+- Put each take's board audio in `album-audio/`, named exactly like its
+  recording: `ffmpeg -i "… 18-26-38.mov" -vn -c:a copy "… 18-26-38.m4a"`.
+  To also make one track per *song*, chop a set with `tools/song_split.py`
+  — it cuts at the quiet gaps between songs.
+- Press **From takes** (web: **Projects from takes**). One project per take
+  appears, named like `9-26-18-26`, its footage scoped to every camera of
+  that take. Cameras that started seconds late — or minutes into the set —
+  land in the right take by capture time.
+- Open a project: **Analyze**, then **Arrange** or **Compare**, then
+  **Render** / **Export**.
+
 ## Thumbnail suggestions
 
 Scores every cataloged clip for cover-frame promise (sharp, well exposed,
