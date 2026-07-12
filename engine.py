@@ -36,6 +36,7 @@ numpy, scipy, scikit-learn, and ffmpeg/ffprobe on PATH.
 from __future__ import annotations
 
 import csv
+import datetime
 import json
 import os
 import re
@@ -1101,6 +1102,97 @@ def list_audio_tracks(media: str) -> list[str]:
     if not os.path.isdir(d):
         return []
     return sorted(f for f in os.listdir(d) if f.lower().endswith(AUDIO_EXTS))
+
+
+# ── multicam live shoots: one project per take ──────────────────────────────
+# OBS's default recording name carries the start time (2025-09-26 18-26-38),
+# so footage pairs with the take's board audio by name alone. Mirrors
+# clip_features.OBS_RE (kept local — engine treats pipeline/ as subprocesses).
+_OBS_TS = re.compile(r"(\d{4})-(\d{2})-(\d{2})[ _](\d{2})-(\d{2})-(\d{2})")
+
+
+def _capture_dt(text: str) -> Optional[datetime.datetime]:
+    """datetime from an OBS-style stamp ('… 18-26-38') or an ISO capture_time
+    ('2025-09-26T18:26:38') found in `text`; None if neither parses."""
+    m = _OBS_TS.search(text)
+    if m:
+        return datetime.datetime(*map(int, m.groups()))
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def group_clips_to_takes(clips, takes, slack_s: int = 5) -> dict:
+    """Assign clips to takes by capture time.
+
+    A clip belongs to the LATEST take starting no later than the clip's own
+    start + slack: camera operators trail the master machine's record button
+    by a few seconds (hence the slack), and a camera started minutes into a
+    set still lands in that set's take.
+
+    clips: [(path, capture_time)] — ISO or OBS-style; unparseable ones skip.
+    takes: take stems carrying OBS timestamps (e.g. '2025-09-26 18-26-38').
+    Returns {take_stem: [clip paths]} with every take keyed (possibly empty).
+    """
+    starts = sorted((dt, t) for t in takes
+                    if (dt := _capture_dt(t)) is not None)
+    out: dict = {t: [] for t in takes}
+    slack = datetime.timedelta(seconds=slack_s)
+    for path, cap in clips:
+        ct = _capture_dt(cap or "")
+        if ct is None:
+            continue
+        fits = [(dt, t) for dt, t in starts if dt <= ct + slack]
+        if fits:
+            out[fits[-1][1]].append(path)
+    return out
+
+
+def projects_from_takes(media: str, slack_s: int = 5) -> list[dict]:
+    """Create one project per take of a multicam live shoot.
+
+    A take = an album-audio track whose stem IS an OBS timestamp (the whole-
+    take recording, '2025-09-26 18-26-38.m4a'; song excerpts like
+    '… - 03 (9m50-12m24).m4a' don't qualify). Each gets a project named
+    M-DD-HH-MM whose clip pool is that take's footage across all cameras.
+
+    Idempotent: a take whose track is already projected, whose name is taken,
+    or that grouped no clips is reported but skipped, so re-running after
+    adding footage only creates what's missing. Returns
+    [{name, track, clips, status}] with status 'created' or the skip reason.
+    """
+    lib = os.path.join(media, "catalog", "manifest.csv")
+    rows: list = []
+    if os.path.exists(lib):
+        with open(lib) as fh:
+            rows = [(r["clip"], r.get("capture_time", ""))
+                    for r in csv.DictReader(fh)]
+    take_tracks = [t for t in list_audio_tracks(media)
+                   if _OBS_TS.fullmatch(os.path.splitext(t)[0])]
+    grouped = group_clips_to_takes(
+        rows, [os.path.splitext(t)[0] for t in take_tracks], slack_s)
+    projected = {load_project(media, n).track for n in list_projects(media)}
+    names = set(list_projects(media))
+    results = []
+    for track in take_tracks:
+        stem = os.path.splitext(track)[0]
+        m = _OBS_TS.fullmatch(stem)
+        name = f"{int(m.group(2))}-{m.group(3)}-{m.group(4)}-{m.group(5)}"
+        clips = grouped.get(stem, [])
+        if track in projected:
+            status = "track already projected"
+        elif name in names:
+            status = "project name taken"
+        elif not clips:
+            status = "no clips"
+        else:
+            new_project(media, name, track, clips=clips)
+            names.add(name)
+            status = "created"
+        results.append({"name": name, "track": track,
+                        "clips": len(clips), "status": status})
+    return results
 
 
 def manifest_sources(library_manifest: str) -> dict:

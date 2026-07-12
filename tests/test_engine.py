@@ -487,6 +487,49 @@ def test_scene_split_parse_seconds():
     assert ss.parse_seconds("2") == 2.0
 
 
+def test_group_clips_to_takes():
+    takes = ["2025-09-26 18-26-38", "2026-06-30 21-09-54"]
+    clips = [
+        ("mast1.mp4", "2025-09-26T18:26:38"),   # master camera, exact match
+        ("late.mp4",  "2026-06-30T21:13:19"),   # camera started mid-set
+        ("trail.mp4", "2025-09-26T18:26:36"),   # pressed record 2s early: slack
+        ("early.mp4", "2025-09-26T17:00:00"),   # before any take → dropped
+        ("none.mp4",  ""),                       # no capture time → dropped
+    ]
+    g = engine.group_clips_to_takes(clips, takes, slack_s=5)
+    assert g["2025-09-26 18-26-38"] == ["mast1.mp4", "trail.mp4"]
+    assert g["2026-06-30 21-09-54"] == ["late.mp4"]
+
+
+def test_projects_from_takes(tmp_path):
+    media = str(tmp_path)
+    album = tmp_path / "album-audio"
+    album.mkdir()
+    # two take tracks + one song excerpt (must NOT become a take project)
+    for t in ("2025-09-26 18-26-38.m4a", "2026-06-30 21-09-54.m4a",
+              "2025-09-26 18-26-38 - 01 (0m00-3m05).m4a"):
+        (album / t).write_bytes(b"x")
+    cat = tmp_path / "catalog"
+    cat.mkdir()
+    (cat / "manifest.csv").write_text(
+        "clip,source,capture_time\n"
+        "/c/a-Scene-001.mp4,2025-09-26 18-26-38,2025-09-26T18:26:38\n"
+        "/c/b-Scene-001.mp4,FB 2025-09-26 18-26-39,2025-09-26T18:26:39\n"
+        "/c/c-Scene-001.mp4,Mt 2026-06-30 21-13-19,2026-06-30T21:13:19\n")
+
+    res = engine.projects_from_takes(media)
+    assert [r["status"] for r in res] == ["created", "created"]
+    assert sorted(r["name"] for r in res) == ["6-30-21-09", "9-26-18-26"]
+    p = engine.load_project(media, "9-26-18-26")
+    assert p.track == "2025-09-26 18-26-38.m4a" and len(p.clips) == 2
+    late = engine.load_project(media, "6-30-21-09")
+    assert late.clips == ["/c/c-Scene-001.mp4"]        # mid-set camera grouped
+
+    # idempotent: second run creates nothing, reports why
+    res2 = engine.projects_from_takes(media)
+    assert [r["status"] for r in res2] == ["track already projected"] * 2
+
+
 @requires_cv2
 def test_clip_features_parse_name_conventions():
     from pipeline.clip_features import parse_name

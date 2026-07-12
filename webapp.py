@@ -550,6 +550,13 @@ def api_create_project(name: str = Form(...), track: str = Form(...),
             "clips": (len(p.clips) if isinstance(p.clips, list) else "all")}
 
 
+@app.post("/api/projects/from-takes")
+def api_projects_from_takes():
+    """One project per OBS take (multicam live shoots): take audio in
+    album-audio pairs with same-named footage across all cameras."""
+    return {"results": engine.projects_from_takes(MEDIA)}
+
+
 @app.post("/api/projects/{name}/clips")
 def api_edit_project_clips(name: str, op: str = Form("replace"),
                            clips: List[str] = Form(default=[])):
@@ -648,6 +655,8 @@ INDEX = """<!doctype html><meta charset=utf-8><title>dv2mv</title>
   <input id=pname placeholder="new project name" size=20>
   footage: <select id=psources multiple size=4 style="vertical-align:top;min-width:13rem"></select>
   <button type=button onclick="createProject()">Create</button>
+  <button type=button onclick="projectsFromTakes()"
+    title="multicam live shoots: one project per OBS take — take audio in album-audio pairs with same-named footage across all cameras">Projects from takes</button>
   <div style="font-size:11px;color:#666">pick tapes to scope the project, or select none for the whole library</div>
 </div>
 </fieldset>
@@ -976,6 +985,15 @@ async function loadProjects(){
     sel.appendChild(o);
   }
   sel.value = cur;
+}
+
+async function projectsFromTakes(){
+  const j = await (await fetch('/api/projects/from-takes', {method:'POST'})).json();
+  if (!j.results.length){ log('no take tracks in album-audio (OBS-named whole-take audio)'); return; }
+  for (const r of j.results)
+    log(`take ${r.name} (${r.track}): ${r.status}` +
+        (r.status === 'created' ? ` — ${r.clips} clips` : ''));
+  await loadProjects();
 }
 
 async function loadSources(){

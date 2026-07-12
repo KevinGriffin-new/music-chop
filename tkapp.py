@@ -1183,6 +1183,9 @@ class App(tk.Tk):
         self.proj_label.pack(side="left", padx=4)
         ttk.Button(proj, text="Open…", command=self.open_project_dialog).pack(side="right", padx=4)
         ttk.Button(proj, text="New…", command=self.new_project_dialog).pack(side="right", padx=4)
+        # multicam live shoots: one project per OBS take (audio↔footage by name)
+        ttk.Button(proj, text="From takes",
+                   command=self.projects_from_takes).pack(side="right", padx=4)
 
         row = ttk.Frame(self, padding=4)
         row.pack(fill="x", padx=6, pady=6)
@@ -1445,6 +1448,27 @@ class App(tk.Tk):
             self._console(f"[project] created '{name}' → {p.dir}\n")
         NewProjectDialog(self, engine.MEDIA, self.track.get().strip(),
                          on_ok=created, clips=preset_clips)
+
+    def projects_from_takes(self) -> None:
+        """One project per OBS take (multicam live shoots): take audio in
+        album-audio pairs with same-named footage across all cameras."""
+        results = engine.projects_from_takes(engine.MEDIA)
+        if not results:
+            messagebox.showinfo(
+                "dv2mv — projects from takes",
+                "No take tracks found. Whole-take audio named like the OBS "
+                "recordings (2025-09-26 18-26-38.m4a) must be in album-audio.")
+            return
+        made = [r for r in results if r["status"] == "created"]
+        for r in results:
+            line = f"[takes] {r['name']} ({r['track']}): {r['status']}"
+            if r["status"] == "created":
+                line += f" — {r['clips']} clips"
+            self._console(line + "\n")
+        messagebox.showinfo(
+            "dv2mv — projects from takes",
+            f"Created {len(made)} project(s) from {len(results)} take(s) "
+            "(details in the console).")
 
     def open_project_dialog(self) -> None:
         names = engine.list_projects(engine.MEDIA)
