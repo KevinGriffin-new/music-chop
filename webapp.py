@@ -788,9 +788,9 @@ function copyInstall(){
   const p = _preflightCache; if (!p) return;
   const cmds = [...new Set(p.tools.filter(t => !t.found && t.install).map(t => t.install))];
   if (!cmds.length) return;
-  const text = cmds.join('\n');
+  const text = cmds.join('\\n');
   navigator.clipboard.writeText(text).then(
-    () => alert('Copied:\n' + text),
+    () => alert('Copied:\\n' + text),
     () => prompt('Copy this install command:', text));
 }
 
